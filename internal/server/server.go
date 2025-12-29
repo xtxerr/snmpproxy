@@ -46,12 +46,12 @@ type Session struct {
 }
 
 // NewSession creates a new session.
-func NewSession(id, tokenID string, conn net.Conn) *Session {
+func NewSession(id, tokenID string, conn net.Conn, w *wire.Conn) *Session {
 	return &Session{
 		ID:            id,
 		TokenID:       tokenID,
 		Conn:          conn,
-		Wire:          wire.NewConn(conn),
+		Wire:          w,
 		CreatedAt:     time.Now(),
 		subscriptions: make(map[string]bool),
 		sendCh:        make(chan *pb.Envelope, 1000),
@@ -255,9 +255,9 @@ func (srv *Server) handleConn(conn net.Conn) {
 	conn.SetDeadline(time.Time{}) // Clear deadline
 
 	// Try restore or create session
-	sess := srv.tryRestore(tokenID, conn)
+	sess := srv.tryRestore(tokenID, conn, w)
 	if sess == nil {
-		sess = NewSession(srv.genID(), tokenID, conn)
+		sess = NewSession(srv.genID(), tokenID, conn, w)
 		srv.mu.Lock()
 		srv.sessions[sess.ID] = sess
 		srv.mu.Unlock()
@@ -267,12 +267,18 @@ func (srv *Server) handleConn(conn net.Conn) {
 	}
 
 	// Send auth response
-	w.Write(&pb.Envelope{
+	authResp := &pb.Envelope{
 		Id: env.Id,
 		Payload: &pb.Envelope_AuthResp{
 			AuthResp: &pb.AuthResponse{Ok: true, SessionId: sess.ID},
 		},
-	})
+	}
+	if err := w.Write(authResp); err != nil {
+		log.Printf("Failed to send auth response to %s: %v", remote, err)
+		conn.Close()
+		return
+	}
+	log.Printf("Sent auth response to %s", remote)
 
 	// Start writer
 	done := make(chan struct{})
@@ -533,7 +539,7 @@ func (srv *Server) validateToken(token string) (string, bool) {
 	return "", false
 }
 
-func (srv *Server) tryRestore(tokenID string, conn net.Conn) *Session {
+func (srv *Server) tryRestore(tokenID string, conn net.Conn, w *wire.Conn) *Session {
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
 
@@ -541,7 +547,7 @@ func (srv *Server) tryRestore(tokenID string, conn net.Conn) *Session {
 		if sess.IsLost() && sess.TokenID == tokenID {
 			sess.mu.Lock()
 			sess.Conn = conn
-			sess.Wire = wire.NewConn(conn)
+			sess.Wire = w
 			sess.LostAt = nil
 			sess.sendCh = make(chan *pb.Envelope, 1000)
 			sess.mu.Unlock()
