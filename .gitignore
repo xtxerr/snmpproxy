@@ -1,0 +1,9 @@
+bin/
+gen/
+certs/
+config.yaml
+*.log
+.idea/
+.vscode/
+*.swp
+.DS_Store

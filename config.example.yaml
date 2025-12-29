@@ -1,0 +1,25 @@
+# snmpproxyd configuration
+
+listen: "0.0.0.0:9161"
+
+tls:
+  cert_file: "certs/server.crt"
+  key_file: "certs/server.key"
+
+auth:
+  tokens:
+    - id: admin
+      token: "${SNMPPROXY_TOKEN:-changeme}"
+
+snmp:
+  timeout_ms: 5000
+  retries: 2
+  buffer_size: 3600
+
+poller:
+  workers: 100
+  queue_size: 10000
+
+session:
+  auth_timeout_sec: 30
+  reconnect_window_sec: 600
