@@ -333,6 +333,12 @@ func (srv *Server) handleMonitor(sess *Session, id uint64, req *pb.MonitorReques
 		return
 	}
 
+	// Validate SNMP config
+	if err := validateSNMPConfig(req.Snmp); err != nil {
+		sess.Send(wire.NewError(id, wire.ErrInvalidRequest, err.Error()))
+		return
+	}
+
 	port := uint16(req.Port)
 	if port == 0 {
 		port = 161
@@ -371,6 +377,47 @@ func (srv *Server) handleMonitor(sess *Session, id uint64, req *pb.MonitorReques
 		},
 	})
 	log.Printf("Session %s created target %s (%s)", sess.ID, targetID, key)
+}
+
+func validateSNMPConfig(cfg *pb.SNMPConfig) error {
+	if cfg == nil {
+		return nil // Will use defaults
+	}
+
+	if v3 := cfg.GetV3(); v3 != nil {
+		if v3.SecurityName == "" {
+			return fmt.Errorf("SNMPv3 requires security_name")
+		}
+
+		switch v3.SecurityLevel {
+		case pb.SecurityLevel_SECURITY_LEVEL_NO_AUTH_NO_PRIV:
+			// No credentials required
+		case pb.SecurityLevel_SECURITY_LEVEL_AUTH_NO_PRIV:
+			if v3.AuthProtocol == pb.AuthProtocol_AUTH_PROTOCOL_UNSPECIFIED {
+				return fmt.Errorf("authNoPriv requires auth_protocol")
+			}
+			if v3.AuthPassword == "" {
+				return fmt.Errorf("authNoPriv requires auth_password")
+			}
+		case pb.SecurityLevel_SECURITY_LEVEL_AUTH_PRIV:
+			if v3.AuthProtocol == pb.AuthProtocol_AUTH_PROTOCOL_UNSPECIFIED {
+				return fmt.Errorf("authPriv requires auth_protocol")
+			}
+			if v3.AuthPassword == "" {
+				return fmt.Errorf("authPriv requires auth_password")
+			}
+			if v3.PrivProtocol == pb.PrivProtocol_PRIV_PROTOCOL_UNSPECIFIED {
+				return fmt.Errorf("authPriv requires priv_protocol")
+			}
+			if v3.PrivPassword == "" {
+				return fmt.Errorf("authPriv requires priv_password")
+			}
+		case pb.SecurityLevel_SECURITY_LEVEL_UNSPECIFIED:
+			return fmt.Errorf("SNMPv3 requires security_level")
+		}
+	}
+
+	return nil
 }
 
 func (srv *Server) handleUnmonitor(sess *Session, id uint64, req *pb.UnmonitorRequest) {

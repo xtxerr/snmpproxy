@@ -59,16 +59,53 @@ message Sample {
   int32 poll_ms = 7;
 }
 
+// ============================================================================
+// SNMP Configuration
+// ============================================================================
+
 message SNMPv2c {
   string community = 1;
 }
 
+enum AuthProtocol {
+  AUTH_PROTOCOL_UNSPECIFIED = 0;
+  AUTH_PROTOCOL_MD5 = 1;
+  AUTH_PROTOCOL_SHA = 2;
+  AUTH_PROTOCOL_SHA224 = 3;
+  AUTH_PROTOCOL_SHA256 = 4;
+  AUTH_PROTOCOL_SHA384 = 5;
+  AUTH_PROTOCOL_SHA512 = 6;
+}
+
+enum PrivProtocol {
+  PRIV_PROTOCOL_UNSPECIFIED = 0;
+  PRIV_PROTOCOL_DES = 1;
+  PRIV_PROTOCOL_AES = 2;
+  PRIV_PROTOCOL_AES192 = 3;
+  PRIV_PROTOCOL_AES256 = 4;
+}
+
+enum SecurityLevel {
+  SECURITY_LEVEL_UNSPECIFIED = 0;
+  SECURITY_LEVEL_NO_AUTH_NO_PRIV = 1;
+  SECURITY_LEVEL_AUTH_NO_PRIV = 2;
+  SECURITY_LEVEL_AUTH_PRIV = 3;
+}
+
 message SNMPv3 {
   string security_name = 1;
-  string auth_protocol = 2;   // "MD5", "SHA", "SHA256", "SHA512"
-  string auth_password = 3;
-  string priv_protocol = 4;   // "DES", "AES", "AES192", "AES256"
-  string priv_password = 5;
+  SecurityLevel security_level = 2;
+  
+  // Auth (required if security_level >= AUTH_NO_PRIV)
+  AuthProtocol auth_protocol = 3;
+  string auth_password = 4;
+  
+  // Priv (required if security_level == AUTH_PRIV)
+  PrivProtocol priv_protocol = 5;
+  string priv_password = 6;
+  
+  // Optional context
+  string context_name = 7;
 }
 
 message SNMPConfig {
@@ -79,6 +116,10 @@ message SNMPConfig {
   uint32 timeout_ms = 3;
   uint32 retries = 4;
 }
+
+// ============================================================================
+// Target
+// ============================================================================
 
 message Target {
   string id = 1;

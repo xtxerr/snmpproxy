@@ -79,7 +79,14 @@ func handleSample(s *pb.Sample) {
 
 func printHelp() {
 	fmt.Println("Commands:")
-	fmt.Println("  monitor <host> <oid> [name] [interval_ms] [community]")
+	fmt.Println("  SNMPv2c:")
+	fmt.Println("    monitor <host> <oid> [name] [-c community] [-i interval_ms]")
+	fmt.Println("  SNMPv3:")
+	fmt.Println("    monitor <host> <oid> [name] -v3 -u user -l level [-a auth_proto -A auth_pass] [-x priv_proto -X priv_pass]")
+	fmt.Println("      -l: noAuthNoPriv, authNoPriv, authPriv")
+	fmt.Println("      -a: MD5, SHA, SHA224, SHA256, SHA384, SHA512")
+	fmt.Println("      -x: DES, AES, AES192, AES256")
+	fmt.Println()
 	fmt.Println("  unmonitor <target-id>")
 	fmt.Println("  list [host-filter]")
 	fmt.Println("  info <target-id>")
@@ -102,7 +109,12 @@ func interactive() {
 			continue
 		}
 
-		parts := strings.Fields(line)
+		parts := parseArgs(line)
+		if len(parts) == 0 {
+			fmt.Print("> ")
+			continue
+		}
+
 		cmd := strings.ToLower(parts[0])
 		args := parts[1:]
 
@@ -134,44 +146,176 @@ func interactive() {
 	}
 }
 
+// parseArgs handles simple argument parsing with flag-like options
+func parseArgs(line string) []string {
+	var args []string
+	var current strings.Builder
+	inQuote := false
+
+	for _, r := range line {
+		switch {
+		case r == '"':
+			inQuote = !inQuote
+		case r == ' ' && !inQuote:
+			if current.Len() > 0 {
+				args = append(args, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+	if current.Len() > 0 {
+		args = append(args, current.String())
+	}
+	return args
+}
+
 func cmdMonitor(args []string) {
 	if len(args) < 2 {
-		fmt.Println("Usage: monitor <host> <oid> [name] [interval_ms] [community]")
+		fmt.Println("Usage: monitor <host> <oid> [name] [options]")
+		fmt.Println("  v2c: -c community -i interval_ms")
+		fmt.Println("  v3:  -v3 -u user -l level -a auth_proto -A auth_pass -x priv_proto -X priv_pass")
 		return
 	}
 
 	host := args[0]
 	oid := args[1]
 
+	// Defaults
 	name := host + "/" + oid
-	if len(args) > 2 {
-		name = args[2]
-	}
-
 	interval := uint32(1000)
-	if len(args) > 3 {
-		if v, err := strconv.Atoi(args[3]); err == nil {
-			interval = uint32(v)
+	community := "public"
+	useV3 := false
+	securityName := ""
+	securityLevel := pb.SecurityLevel_SECURITY_LEVEL_AUTH_PRIV
+	authProto := pb.AuthProtocol_AUTH_PROTOCOL_SHA256
+	authPass := ""
+	privProto := pb.PrivProtocol_PRIV_PROTOCOL_AES
+	privPass := ""
+	contextName := ""
+
+	// Parse remaining args
+	i := 2
+	for i < len(args) {
+		arg := args[i]
+		switch arg {
+		case "-c":
+			if i+1 < len(args) {
+				community = args[i+1]
+				i += 2
+			} else {
+				i++
+			}
+		case "-i":
+			if i+1 < len(args) {
+				if v, err := strconv.Atoi(args[i+1]); err == nil {
+					interval = uint32(v)
+				}
+				i += 2
+			} else {
+				i++
+			}
+		case "-v3":
+			useV3 = true
+			i++
+		case "-u":
+			if i+1 < len(args) {
+				securityName = args[i+1]
+				i += 2
+			} else {
+				i++
+			}
+		case "-l":
+			if i+1 < len(args) {
+				securityLevel = parseSecurityLevel(args[i+1])
+				i += 2
+			} else {
+				i++
+			}
+		case "-a":
+			if i+1 < len(args) {
+				authProto = parseAuthProtocol(args[i+1])
+				i += 2
+			} else {
+				i++
+			}
+		case "-A":
+			if i+1 < len(args) {
+				authPass = args[i+1]
+				i += 2
+			} else {
+				i++
+			}
+		case "-x":
+			if i+1 < len(args) {
+				privProto = parsePrivProtocol(args[i+1])
+				i += 2
+			} else {
+				i++
+			}
+		case "-X":
+			if i+1 < len(args) {
+				privPass = args[i+1]
+				i += 2
+			} else {
+				i++
+			}
+		case "-n":
+			if i+1 < len(args) {
+				contextName = args[i+1]
+				i += 2
+			} else {
+				i++
+			}
+		default:
+			// Positional: name
+			if !strings.HasPrefix(arg, "-") {
+				name = arg
+			}
+			i++
 		}
 	}
 
-	community := "public"
-	if len(args) > 4 {
-		community = args[4]
-	}
-
-	resp, err := cli.Monitor(&pb.MonitorRequest{
+	req := &pb.MonitorRequest{
 		Host:       host,
 		Port:       161,
 		Oid:        oid,
 		IntervalMs: interval,
 		BufferSize: 3600,
-		Snmp: &pb.SNMPConfig{
+	}
+
+	if useV3 {
+		if securityName == "" {
+			fmt.Println("Error: -u (security name) required for SNMPv3")
+			return
+		}
+		if err := validateV3Config(securityLevel, authPass, privPass); err != nil {
+			fmt.Printf("Error: %v\n", err)
+			return
+		}
+		req.Snmp = &pb.SNMPConfig{
+			Version: &pb.SNMPConfig_V3{
+				V3: &pb.SNMPv3{
+					SecurityName:  securityName,
+					SecurityLevel: securityLevel,
+					AuthProtocol:  authProto,
+					AuthPassword:  authPass,
+					PrivProtocol:  privProto,
+					PrivPassword:  privPass,
+					ContextName:   contextName,
+				},
+			},
+		}
+	} else {
+		req.Snmp = &pb.SNMPConfig{
 			Version: &pb.SNMPConfig_V2C{
 				V2C: &pb.SNMPv2C{Community: community},
 			},
-		},
-	})
+		}
+	}
+
+	resp, err := cli.Monitor(req)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
@@ -182,6 +326,75 @@ func cmdMonitor(args []string) {
 		fmt.Printf("Created: %s (%s)\n", resp.TargetId, name)
 	} else {
 		fmt.Printf("Joined: %s (%s)\n", resp.TargetId, name)
+	}
+}
+
+func validateV3Config(level pb.SecurityLevel, authPass, privPass string) error {
+	switch level {
+	case pb.SecurityLevel_SECURITY_LEVEL_NO_AUTH_NO_PRIV:
+		// No credentials required
+	case pb.SecurityLevel_SECURITY_LEVEL_AUTH_NO_PRIV:
+		if authPass == "" {
+			return fmt.Errorf("authNoPriv requires -A (auth password)")
+		}
+	case pb.SecurityLevel_SECURITY_LEVEL_AUTH_PRIV:
+		if authPass == "" {
+			return fmt.Errorf("authPriv requires -A (auth password)")
+		}
+		if privPass == "" {
+			return fmt.Errorf("authPriv requires -X (priv password)")
+		}
+	}
+	return nil
+}
+
+func parseSecurityLevel(s string) pb.SecurityLevel {
+	switch strings.ToLower(s) {
+	case "noauthnopriv":
+		return pb.SecurityLevel_SECURITY_LEVEL_NO_AUTH_NO_PRIV
+	case "authnopriv":
+		return pb.SecurityLevel_SECURITY_LEVEL_AUTH_NO_PRIV
+	case "authpriv":
+		return pb.SecurityLevel_SECURITY_LEVEL_AUTH_PRIV
+	default:
+		fmt.Printf("Warning: unknown security level '%s', using authPriv\n", s)
+		return pb.SecurityLevel_SECURITY_LEVEL_AUTH_PRIV
+	}
+}
+
+func parseAuthProtocol(s string) pb.AuthProtocol {
+	switch strings.ToUpper(s) {
+	case "MD5":
+		return pb.AuthProtocol_AUTH_PROTOCOL_MD5
+	case "SHA", "SHA1":
+		return pb.AuthProtocol_AUTH_PROTOCOL_SHA
+	case "SHA224":
+		return pb.AuthProtocol_AUTH_PROTOCOL_SHA224
+	case "SHA256":
+		return pb.AuthProtocol_AUTH_PROTOCOL_SHA256
+	case "SHA384":
+		return pb.AuthProtocol_AUTH_PROTOCOL_SHA384
+	case "SHA512":
+		return pb.AuthProtocol_AUTH_PROTOCOL_SHA512
+	default:
+		fmt.Printf("Warning: unknown auth protocol '%s', using SHA256\n", s)
+		return pb.AuthProtocol_AUTH_PROTOCOL_SHA256
+	}
+}
+
+func parsePrivProtocol(s string) pb.PrivProtocol {
+	switch strings.ToUpper(s) {
+	case "DES":
+		return pb.PrivProtocol_PRIV_PROTOCOL_DES
+	case "AES", "AES128":
+		return pb.PrivProtocol_PRIV_PROTOCOL_AES
+	case "AES192":
+		return pb.PrivProtocol_PRIV_PROTOCOL_AES192
+	case "AES256":
+		return pb.PrivProtocol_PRIV_PROTOCOL_AES256
+	default:
+		fmt.Printf("Warning: unknown priv protocol '%s', using AES\n", s)
+		return pb.PrivProtocol_PRIV_PROTOCOL_AES
 	}
 }
 

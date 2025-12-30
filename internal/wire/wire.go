@@ -2,10 +2,10 @@
 package wire
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"sync"
-	"bufio"
 
 	pb "github.com/xtxerr/snmpproxy/internal/proto"
 	"google.golang.org/protobuf/encoding/protodelim"

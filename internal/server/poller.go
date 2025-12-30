@@ -303,18 +303,38 @@ func (p *Poller) poll(targetID string) PollResult {
 	}
 
 	if snmpCfg != nil {
+		if snmpCfg.TimeoutMs > 0 {
+			snmp.Timeout = time.Duration(snmpCfg.TimeoutMs) * time.Millisecond
+		}
+		if snmpCfg.Retries > 0 {
+			snmp.Retries = int(snmpCfg.Retries)
+		}
+
 		if v2c := snmpCfg.GetV2C(); v2c != nil {
 			snmp.Version = gosnmp.Version2c
 			snmp.Community = v2c.Community
 		} else if v3 := snmpCfg.GetV3(); v3 != nil {
 			snmp.Version = gosnmp.Version3
 			snmp.SecurityModel = gosnmp.UserSecurityModel
-			snmp.MsgFlags = gosnmp.AuthPriv
+			snmp.ContextName = v3.ContextName
+
+			// Security level
+			switch v3.SecurityLevel {
+			case pb.SecurityLevel_SECURITY_LEVEL_NO_AUTH_NO_PRIV:
+				snmp.MsgFlags = gosnmp.NoAuthNoPriv
+			case pb.SecurityLevel_SECURITY_LEVEL_AUTH_NO_PRIV:
+				snmp.MsgFlags = gosnmp.AuthNoPriv
+			case pb.SecurityLevel_SECURITY_LEVEL_AUTH_PRIV:
+				snmp.MsgFlags = gosnmp.AuthPriv
+			default:
+				snmp.MsgFlags = gosnmp.AuthPriv
+			}
+
 			snmp.SecurityParameters = &gosnmp.UsmSecurityParameters{
 				UserName:                 v3.SecurityName,
-				AuthenticationProtocol:   mapAuthProto(v3.AuthProtocol),
+				AuthenticationProtocol:   mapAuthProtocol(v3.AuthProtocol),
 				AuthenticationPassphrase: v3.AuthPassword,
-				PrivacyProtocol:          mapPrivProto(v3.PrivProtocol),
+				PrivacyProtocol:          mapPrivProtocol(v3.PrivProtocol),
 				PrivacyPassphrase:        v3.PrivPassword,
 			}
 		}
@@ -434,30 +454,34 @@ func (p *Poller) dispatchSample(r PollResult) {
 	}
 }
 
-func mapAuthProto(s string) gosnmp.SnmpV3AuthProtocol {
-	switch s {
-	case "MD5":
+func mapAuthProtocol(p pb.AuthProtocol) gosnmp.SnmpV3AuthProtocol {
+	switch p {
+	case pb.AuthProtocol_AUTH_PROTOCOL_MD5:
 		return gosnmp.MD5
-	case "SHA":
+	case pb.AuthProtocol_AUTH_PROTOCOL_SHA:
 		return gosnmp.SHA
-	case "SHA256":
+	case pb.AuthProtocol_AUTH_PROTOCOL_SHA224:
+		return gosnmp.SHA224
+	case pb.AuthProtocol_AUTH_PROTOCOL_SHA256:
 		return gosnmp.SHA256
-	case "SHA512":
+	case pb.AuthProtocol_AUTH_PROTOCOL_SHA384:
+		return gosnmp.SHA384
+	case pb.AuthProtocol_AUTH_PROTOCOL_SHA512:
 		return gosnmp.SHA512
 	default:
 		return gosnmp.NoAuth
 	}
 }
 
-func mapPrivProto(s string) gosnmp.SnmpV3PrivProtocol {
-	switch s {
-	case "DES":
+func mapPrivProtocol(p pb.PrivProtocol) gosnmp.SnmpV3PrivProtocol {
+	switch p {
+	case pb.PrivProtocol_PRIV_PROTOCOL_DES:
 		return gosnmp.DES
-	case "AES":
+	case pb.PrivProtocol_PRIV_PROTOCOL_AES:
 		return gosnmp.AES
-	case "AES192":
+	case pb.PrivProtocol_PRIV_PROTOCOL_AES192:
 		return gosnmp.AES192
-	case "AES256":
+	case pb.PrivProtocol_PRIV_PROTOCOL_AES256:
 		return gosnmp.AES256
 	default:
 		return gosnmp.NoPriv
