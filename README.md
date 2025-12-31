@@ -51,7 +51,10 @@ export SNMPPROXY_TOKEN="your-secret-token"
 ## snmpctl Commands
 
 ```
-monitor <host> <oid> [name] [interval_ms] [community]
+monitor <host> <oid> [name] [options]
+  SNMPv2c: -c community -i interval_ms
+  SNMPv3:  -v3 -u user -l level -a auth_proto -A auth_pass -x priv_proto -X priv_pass
+
 unmonitor <target-id>
 list [host-filter]
 info <target-id>
@@ -89,11 +92,50 @@ Timestamp                Value                Valid    PollMs
 > quit
 ```
 
-## Protocol
+## Wire Protocol
 
-Length-delimited protobuf over TLS/TCP using `google.golang.org/protobuf/encoding/protodelim`.
+Messages are framed using **varint-prefixed length-delimited protobuf** over TLS/TCP,
+compatible with Go's `google.golang.org/protobuf/encoding/protodelim`.
+
+```
+┌─────────────────────────────────────────────┐
+│ [varint: message length][protobuf payload]  │
+└─────────────────────────────────────────────┘
+```
+
+**Varint encoding:**
+- Each byte uses 7 bits for data, 1 bit (MSB) as continuation flag
+- MSB=1 means more bytes follow, MSB=0 means last byte
+- Example: length 300 = 0xAC 0x02 (2 bytes)
 
 See `proto/snmpproxy.proto` for message definitions.
+
+### Message Format
+
+All messages are wrapped in an `Envelope`:
+
+```protobuf
+message Envelope {
+  uint64 id = 1;      // Request/Response correlation, Push uses id=0
+  oneof payload {
+    // Client → Server
+    AuthRequest auth = 10;
+    MonitorRequest monitor = 11;
+    // ... etc
+    
+    // Server → Client
+    AuthResponse auth_resp = 50;
+    MonitorResponse monitor_resp = 51;
+    // ... etc
+    
+    // Push (id=0)
+    Sample sample = 80;
+    
+    // Error
+    Error error = 99;
+  }
+}
+```
 
 ## Configuration
 
@@ -122,6 +164,34 @@ session:
   auth_timeout_sec: 30
   reconnect_window_sec: 600  # preserve session for 10min after disconnect
 ```
+
+## SNMPv3 Support
+
+Full SNMPv3 support with all security levels:
+
+| Level | Description |
+|-------|-------------|
+| `noAuthNoPriv` | No authentication, no encryption |
+| `authNoPriv` | Authentication only |
+| `authPriv` | Authentication + Encryption |
+
+**Authentication protocols:** MD5, SHA, SHA-224, SHA-256, SHA-384, SHA-512
+
+**Privacy protocols:** DES, AES, AES-192, AES-256
+
+### Example v3 Usage
+
+```bash
+# authPriv with SHA-256 and AES
+> monitor 192.168.1.1 1.3.6.1.2.1.1.1.0 sysDescr -v3 -u admin -l authPriv \
+    -a SHA256 -A authpass123 -x AES -X privpass123
+```
+
+## Session Management
+
+- Sessions persist for `reconnect_window_sec` (default: 10 min) after disconnect
+- Subscriptions are preserved across reconnects
+- Multiple clients can share the same target (deduplication by host:port/oid)
 
 ## License
 

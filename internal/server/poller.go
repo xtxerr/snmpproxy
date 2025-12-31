@@ -135,6 +135,40 @@ func (t *Target) WriteSample(s Sample) {
 	}
 }
 
+// WriteSampleAndGetSubscribers atomically writes a sample and returns subscribers.
+// This prevents race conditions between writing and getting subscribers.
+func (t *Target) WriteSampleAndGetSubscribers(s Sample) []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Write sample
+	t.buffer[t.writeIdx] = s
+	t.writeIdx = (t.writeIdx + 1) % t.bufSize
+	if t.count < t.bufSize {
+		t.count++
+	}
+
+	t.LastPollMs = s.TimestampMs
+	if s.Valid {
+		t.State = "polling"
+		t.LastError = ""
+		t.ErrCount = 0
+	} else {
+		t.LastError = s.Error
+		t.ErrCount++
+		if t.ErrCount >= 3 {
+			t.State = "unreachable"
+		}
+	}
+
+	// Get subscribers while still holding the lock
+	subs := make([]string, 0, len(t.Subscribers))
+	for id := range t.Subscribers {
+		subs = append(subs, id)
+	}
+	return subs
+}
+
 // ReadLastN returns the last n samples (oldest first).
 func (t *Target) ReadLastN(n int) []Sample {
 	t.mu.RLock()
@@ -412,8 +446,10 @@ func (p *Poller) dispatchSample(r PollResult) {
 		return
 	}
 
-	// Write to buffer
-	t.WriteSample(Sample{
+	// FIX: Use atomic write-and-get-subscribers to prevent race condition
+	// Previously: WriteSample() then GetSubscribers() with lock released between
+	// Now: Single atomic operation
+	subs := t.WriteSampleAndGetSubscribers(Sample{
 		TimestampMs: r.TimestampMs,
 		Counter:     r.Counter,
 		Text:        r.Text,
@@ -421,9 +457,6 @@ func (p *Poller) dispatchSample(r PollResult) {
 		Error:       r.Error,
 		PollMs:      r.PollMs,
 	})
-
-	// Get subscribers
-	subs := t.GetSubscribers()
 	p.server.mu.RUnlock()
 
 	// Build sample envelope

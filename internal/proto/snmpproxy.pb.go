@@ -21,6 +21,174 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type AuthProtocol int32
+
+const (
+	AuthProtocol_AUTH_PROTOCOL_UNSPECIFIED AuthProtocol = 0
+	AuthProtocol_AUTH_PROTOCOL_MD5         AuthProtocol = 1
+	AuthProtocol_AUTH_PROTOCOL_SHA         AuthProtocol = 2
+	AuthProtocol_AUTH_PROTOCOL_SHA224      AuthProtocol = 3
+	AuthProtocol_AUTH_PROTOCOL_SHA256      AuthProtocol = 4
+	AuthProtocol_AUTH_PROTOCOL_SHA384      AuthProtocol = 5
+	AuthProtocol_AUTH_PROTOCOL_SHA512      AuthProtocol = 6
+)
+
+// Enum value maps for AuthProtocol.
+var (
+	AuthProtocol_name = map[int32]string{
+		0: "AUTH_PROTOCOL_UNSPECIFIED",
+		1: "AUTH_PROTOCOL_MD5",
+		2: "AUTH_PROTOCOL_SHA",
+		3: "AUTH_PROTOCOL_SHA224",
+		4: "AUTH_PROTOCOL_SHA256",
+		5: "AUTH_PROTOCOL_SHA384",
+		6: "AUTH_PROTOCOL_SHA512",
+	}
+	AuthProtocol_value = map[string]int32{
+		"AUTH_PROTOCOL_UNSPECIFIED": 0,
+		"AUTH_PROTOCOL_MD5":         1,
+		"AUTH_PROTOCOL_SHA":         2,
+		"AUTH_PROTOCOL_SHA224":      3,
+		"AUTH_PROTOCOL_SHA256":      4,
+		"AUTH_PROTOCOL_SHA384":      5,
+		"AUTH_PROTOCOL_SHA512":      6,
+	}
+)
+
+func (x AuthProtocol) Enum() *AuthProtocol {
+	p := new(AuthProtocol)
+	*p = x
+	return p
+}
+
+func (x AuthProtocol) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AuthProtocol) Descriptor() protoreflect.EnumDescriptor {
+	return file_snmpproxy_proto_enumTypes[0].Descriptor()
+}
+
+func (AuthProtocol) Type() protoreflect.EnumType {
+	return &file_snmpproxy_proto_enumTypes[0]
+}
+
+func (x AuthProtocol) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AuthProtocol.Descriptor instead.
+func (AuthProtocol) EnumDescriptor() ([]byte, []int) {
+	return file_snmpproxy_proto_rawDescGZIP(), []int{0}
+}
+
+type PrivProtocol int32
+
+const (
+	PrivProtocol_PRIV_PROTOCOL_UNSPECIFIED PrivProtocol = 0
+	PrivProtocol_PRIV_PROTOCOL_DES         PrivProtocol = 1
+	PrivProtocol_PRIV_PROTOCOL_AES         PrivProtocol = 2
+	PrivProtocol_PRIV_PROTOCOL_AES192      PrivProtocol = 3
+	PrivProtocol_PRIV_PROTOCOL_AES256      PrivProtocol = 4
+)
+
+// Enum value maps for PrivProtocol.
+var (
+	PrivProtocol_name = map[int32]string{
+		0: "PRIV_PROTOCOL_UNSPECIFIED",
+		1: "PRIV_PROTOCOL_DES",
+		2: "PRIV_PROTOCOL_AES",
+		3: "PRIV_PROTOCOL_AES192",
+		4: "PRIV_PROTOCOL_AES256",
+	}
+	PrivProtocol_value = map[string]int32{
+		"PRIV_PROTOCOL_UNSPECIFIED": 0,
+		"PRIV_PROTOCOL_DES":         1,
+		"PRIV_PROTOCOL_AES":         2,
+		"PRIV_PROTOCOL_AES192":      3,
+		"PRIV_PROTOCOL_AES256":      4,
+	}
+)
+
+func (x PrivProtocol) Enum() *PrivProtocol {
+	p := new(PrivProtocol)
+	*p = x
+	return p
+}
+
+func (x PrivProtocol) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PrivProtocol) Descriptor() protoreflect.EnumDescriptor {
+	return file_snmpproxy_proto_enumTypes[1].Descriptor()
+}
+
+func (PrivProtocol) Type() protoreflect.EnumType {
+	return &file_snmpproxy_proto_enumTypes[1]
+}
+
+func (x PrivProtocol) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PrivProtocol.Descriptor instead.
+func (PrivProtocol) EnumDescriptor() ([]byte, []int) {
+	return file_snmpproxy_proto_rawDescGZIP(), []int{1}
+}
+
+type SecurityLevel int32
+
+const (
+	SecurityLevel_SECURITY_LEVEL_UNSPECIFIED     SecurityLevel = 0
+	SecurityLevel_SECURITY_LEVEL_NO_AUTH_NO_PRIV SecurityLevel = 1
+	SecurityLevel_SECURITY_LEVEL_AUTH_NO_PRIV    SecurityLevel = 2
+	SecurityLevel_SECURITY_LEVEL_AUTH_PRIV       SecurityLevel = 3
+)
+
+// Enum value maps for SecurityLevel.
+var (
+	SecurityLevel_name = map[int32]string{
+		0: "SECURITY_LEVEL_UNSPECIFIED",
+		1: "SECURITY_LEVEL_NO_AUTH_NO_PRIV",
+		2: "SECURITY_LEVEL_AUTH_NO_PRIV",
+		3: "SECURITY_LEVEL_AUTH_PRIV",
+	}
+	SecurityLevel_value = map[string]int32{
+		"SECURITY_LEVEL_UNSPECIFIED":     0,
+		"SECURITY_LEVEL_NO_AUTH_NO_PRIV": 1,
+		"SECURITY_LEVEL_AUTH_NO_PRIV":    2,
+		"SECURITY_LEVEL_AUTH_PRIV":       3,
+	}
+)
+
+func (x SecurityLevel) Enum() *SecurityLevel {
+	p := new(SecurityLevel)
+	*p = x
+	return p
+}
+
+func (x SecurityLevel) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SecurityLevel) Descriptor() protoreflect.EnumDescriptor {
+	return file_snmpproxy_proto_enumTypes[2].Descriptor()
+}
+
+func (SecurityLevel) Type() protoreflect.EnumType {
+	return &file_snmpproxy_proto_enumTypes[2]
+}
+
+func (x SecurityLevel) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SecurityLevel.Descriptor instead.
+func (SecurityLevel) EnumDescriptor() ([]byte, []int) {
+	return file_snmpproxy_proto_rawDescGZIP(), []int{2}
+}
+
 type Envelope struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"` // Request/Response correlation. Push messages use id=0.
@@ -562,10 +730,15 @@ func (x *SNMPv2C) GetCommunity() string {
 type SNMPv3 struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SecurityName  string                 `protobuf:"bytes,1,opt,name=security_name,json=securityName,proto3" json:"security_name,omitempty"`
-	AuthProtocol  string                 `protobuf:"bytes,2,opt,name=auth_protocol,json=authProtocol,proto3" json:"auth_protocol,omitempty"` // "MD5", "SHA", "SHA256", "SHA512"
-	AuthPassword  string                 `protobuf:"bytes,3,opt,name=auth_password,json=authPassword,proto3" json:"auth_password,omitempty"`
-	PrivProtocol  string                 `protobuf:"bytes,4,opt,name=priv_protocol,json=privProtocol,proto3" json:"priv_protocol,omitempty"` // "DES", "AES", "AES192", "AES256"
-	PrivPassword  string                 `protobuf:"bytes,5,opt,name=priv_password,json=privPassword,proto3" json:"priv_password,omitempty"`
+	SecurityLevel SecurityLevel          `protobuf:"varint,2,opt,name=security_level,json=securityLevel,proto3,enum=snmpproxy.v1.SecurityLevel" json:"security_level,omitempty"`
+	// Auth (required if security_level >= AUTH_NO_PRIV)
+	AuthProtocol AuthProtocol `protobuf:"varint,3,opt,name=auth_protocol,json=authProtocol,proto3,enum=snmpproxy.v1.AuthProtocol" json:"auth_protocol,omitempty"`
+	AuthPassword string       `protobuf:"bytes,4,opt,name=auth_password,json=authPassword,proto3" json:"auth_password,omitempty"`
+	// Priv (required if security_level == AUTH_PRIV)
+	PrivProtocol PrivProtocol `protobuf:"varint,5,opt,name=priv_protocol,json=privProtocol,proto3,enum=snmpproxy.v1.PrivProtocol" json:"priv_protocol,omitempty"`
+	PrivPassword string       `protobuf:"bytes,6,opt,name=priv_password,json=privPassword,proto3" json:"priv_password,omitempty"`
+	// Optional context
+	ContextName   string `protobuf:"bytes,7,opt,name=context_name,json=contextName,proto3" json:"context_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -607,11 +780,18 @@ func (x *SNMPv3) GetSecurityName() string {
 	return ""
 }
 
-func (x *SNMPv3) GetAuthProtocol() string {
+func (x *SNMPv3) GetSecurityLevel() SecurityLevel {
+	if x != nil {
+		return x.SecurityLevel
+	}
+	return SecurityLevel_SECURITY_LEVEL_UNSPECIFIED
+}
+
+func (x *SNMPv3) GetAuthProtocol() AuthProtocol {
 	if x != nil {
 		return x.AuthProtocol
 	}
-	return ""
+	return AuthProtocol_AUTH_PROTOCOL_UNSPECIFIED
 }
 
 func (x *SNMPv3) GetAuthPassword() string {
@@ -621,16 +801,23 @@ func (x *SNMPv3) GetAuthPassword() string {
 	return ""
 }
 
-func (x *SNMPv3) GetPrivProtocol() string {
+func (x *SNMPv3) GetPrivProtocol() PrivProtocol {
 	if x != nil {
 		return x.PrivProtocol
 	}
-	return ""
+	return PrivProtocol_PRIV_PROTOCOL_UNSPECIFIED
 }
 
 func (x *SNMPv3) GetPrivPassword() string {
 	if x != nil {
 		return x.PrivPassword
+	}
+	return ""
+}
+
+func (x *SNMPv3) GetContextName() string {
+	if x != nil {
+		return x.ContextName
 	}
 	return ""
 }
@@ -1735,13 +1922,15 @@ const file_snmpproxy_proto_rawDesc = "" +
 	"\x05error\x18\x06 \x01(\tR\x05error\x12\x17\n" +
 	"\apoll_ms\x18\a \x01(\x05R\x06pollMs\"'\n" +
 	"\aSNMPv2c\x12\x1c\n" +
-	"\tcommunity\x18\x01 \x01(\tR\tcommunity\"\xc1\x01\n" +
+	"\tcommunity\x18\x01 \x01(\tR\tcommunity\"\xe0\x02\n" +
 	"\x06SNMPv3\x12#\n" +
-	"\rsecurity_name\x18\x01 \x01(\tR\fsecurityName\x12#\n" +
-	"\rauth_protocol\x18\x02 \x01(\tR\fauthProtocol\x12#\n" +
-	"\rauth_password\x18\x03 \x01(\tR\fauthPassword\x12#\n" +
-	"\rpriv_protocol\x18\x04 \x01(\tR\fprivProtocol\x12#\n" +
-	"\rpriv_password\x18\x05 \x01(\tR\fprivPassword\"\xa3\x01\n" +
+	"\rsecurity_name\x18\x01 \x01(\tR\fsecurityName\x12B\n" +
+	"\x0esecurity_level\x18\x02 \x01(\x0e2\x1b.snmpproxy.v1.SecurityLevelR\rsecurityLevel\x12?\n" +
+	"\rauth_protocol\x18\x03 \x01(\x0e2\x1a.snmpproxy.v1.AuthProtocolR\fauthProtocol\x12#\n" +
+	"\rauth_password\x18\x04 \x01(\tR\fauthPassword\x12?\n" +
+	"\rpriv_protocol\x18\x05 \x01(\x0e2\x1a.snmpproxy.v1.PrivProtocolR\fprivProtocol\x12#\n" +
+	"\rpriv_password\x18\x06 \x01(\tR\fprivPassword\x12!\n" +
+	"\fcontext_name\x18\a \x01(\tR\vcontextName\"\xa3\x01\n" +
 	"\n" +
 	"SNMPConfig\x12)\n" +
 	"\x03v2c\x18\x01 \x01(\v2\x15.snmpproxy.v1.SNMPv2cH\x00R\x03v2c\x12&\n" +
@@ -1820,7 +2009,26 @@ const file_snmpproxy_proto_rawDesc = "" +
 	"\n" +
 	"target_ids\x18\x01 \x03(\tR\ttargetIds\"%\n" +
 	"\x13UnsubscribeResponse\x12\x0e\n" +
-	"\x02ok\x18\x01 \x01(\bR\x02okB,Z*github.com/xtxerr/snmpproxy/internal/protob\x06proto3"
+	"\x02ok\x18\x01 \x01(\bR\x02ok*\xc3\x01\n" +
+	"\fAuthProtocol\x12\x1d\n" +
+	"\x19AUTH_PROTOCOL_UNSPECIFIED\x10\x00\x12\x15\n" +
+	"\x11AUTH_PROTOCOL_MD5\x10\x01\x12\x15\n" +
+	"\x11AUTH_PROTOCOL_SHA\x10\x02\x12\x18\n" +
+	"\x14AUTH_PROTOCOL_SHA224\x10\x03\x12\x18\n" +
+	"\x14AUTH_PROTOCOL_SHA256\x10\x04\x12\x18\n" +
+	"\x14AUTH_PROTOCOL_SHA384\x10\x05\x12\x18\n" +
+	"\x14AUTH_PROTOCOL_SHA512\x10\x06*\x8f\x01\n" +
+	"\fPrivProtocol\x12\x1d\n" +
+	"\x19PRIV_PROTOCOL_UNSPECIFIED\x10\x00\x12\x15\n" +
+	"\x11PRIV_PROTOCOL_DES\x10\x01\x12\x15\n" +
+	"\x11PRIV_PROTOCOL_AES\x10\x02\x12\x18\n" +
+	"\x14PRIV_PROTOCOL_AES192\x10\x03\x12\x18\n" +
+	"\x14PRIV_PROTOCOL_AES256\x10\x04*\x92\x01\n" +
+	"\rSecurityLevel\x12\x1e\n" +
+	"\x1aSECURITY_LEVEL_UNSPECIFIED\x10\x00\x12\"\n" +
+	"\x1eSECURITY_LEVEL_NO_AUTH_NO_PRIV\x10\x01\x12\x1f\n" +
+	"\x1bSECURITY_LEVEL_AUTH_NO_PRIV\x10\x02\x12\x1c\n" +
+	"\x18SECURITY_LEVEL_AUTH_PRIV\x10\x03B,Z*github.com/xtxerr/snmpproxy/internal/protob\x06proto3"
 
 var (
 	file_snmpproxy_proto_rawDescOnce sync.Once
@@ -1834,64 +2042,71 @@ func file_snmpproxy_proto_rawDescGZIP() []byte {
 	return file_snmpproxy_proto_rawDescData
 }
 
+var file_snmpproxy_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_snmpproxy_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
 var file_snmpproxy_proto_goTypes = []any{
-	(*Envelope)(nil),            // 0: snmpproxy.v1.Envelope
-	(*Error)(nil),               // 1: snmpproxy.v1.Error
-	(*Sample)(nil),              // 2: snmpproxy.v1.Sample
-	(*SNMPv2C)(nil),             // 3: snmpproxy.v1.SNMPv2c
-	(*SNMPv3)(nil),              // 4: snmpproxy.v1.SNMPv3
-	(*SNMPConfig)(nil),          // 5: snmpproxy.v1.SNMPConfig
-	(*Target)(nil),              // 6: snmpproxy.v1.Target
-	(*AuthRequest)(nil),         // 7: snmpproxy.v1.AuthRequest
-	(*AuthResponse)(nil),        // 8: snmpproxy.v1.AuthResponse
-	(*MonitorRequest)(nil),      // 9: snmpproxy.v1.MonitorRequest
-	(*MonitorResponse)(nil),     // 10: snmpproxy.v1.MonitorResponse
-	(*UnmonitorRequest)(nil),    // 11: snmpproxy.v1.UnmonitorRequest
-	(*UnmonitorResponse)(nil),   // 12: snmpproxy.v1.UnmonitorResponse
-	(*ListTargetsRequest)(nil),  // 13: snmpproxy.v1.ListTargetsRequest
-	(*ListTargetsResponse)(nil), // 14: snmpproxy.v1.ListTargetsResponse
-	(*GetTargetRequest)(nil),    // 15: snmpproxy.v1.GetTargetRequest
-	(*GetTargetResponse)(nil),   // 16: snmpproxy.v1.GetTargetResponse
-	(*GetHistoryRequest)(nil),   // 17: snmpproxy.v1.GetHistoryRequest
-	(*GetHistoryResponse)(nil),  // 18: snmpproxy.v1.GetHistoryResponse
-	(*TargetHistory)(nil),       // 19: snmpproxy.v1.TargetHistory
-	(*SubscribeRequest)(nil),    // 20: snmpproxy.v1.SubscribeRequest
-	(*SubscribeResponse)(nil),   // 21: snmpproxy.v1.SubscribeResponse
-	(*UnsubscribeRequest)(nil),  // 22: snmpproxy.v1.UnsubscribeRequest
-	(*UnsubscribeResponse)(nil), // 23: snmpproxy.v1.UnsubscribeResponse
+	(AuthProtocol)(0),           // 0: snmpproxy.v1.AuthProtocol
+	(PrivProtocol)(0),           // 1: snmpproxy.v1.PrivProtocol
+	(SecurityLevel)(0),          // 2: snmpproxy.v1.SecurityLevel
+	(*Envelope)(nil),            // 3: snmpproxy.v1.Envelope
+	(*Error)(nil),               // 4: snmpproxy.v1.Error
+	(*Sample)(nil),              // 5: snmpproxy.v1.Sample
+	(*SNMPv2C)(nil),             // 6: snmpproxy.v1.SNMPv2c
+	(*SNMPv3)(nil),              // 7: snmpproxy.v1.SNMPv3
+	(*SNMPConfig)(nil),          // 8: snmpproxy.v1.SNMPConfig
+	(*Target)(nil),              // 9: snmpproxy.v1.Target
+	(*AuthRequest)(nil),         // 10: snmpproxy.v1.AuthRequest
+	(*AuthResponse)(nil),        // 11: snmpproxy.v1.AuthResponse
+	(*MonitorRequest)(nil),      // 12: snmpproxy.v1.MonitorRequest
+	(*MonitorResponse)(nil),     // 13: snmpproxy.v1.MonitorResponse
+	(*UnmonitorRequest)(nil),    // 14: snmpproxy.v1.UnmonitorRequest
+	(*UnmonitorResponse)(nil),   // 15: snmpproxy.v1.UnmonitorResponse
+	(*ListTargetsRequest)(nil),  // 16: snmpproxy.v1.ListTargetsRequest
+	(*ListTargetsResponse)(nil), // 17: snmpproxy.v1.ListTargetsResponse
+	(*GetTargetRequest)(nil),    // 18: snmpproxy.v1.GetTargetRequest
+	(*GetTargetResponse)(nil),   // 19: snmpproxy.v1.GetTargetResponse
+	(*GetHistoryRequest)(nil),   // 20: snmpproxy.v1.GetHistoryRequest
+	(*GetHistoryResponse)(nil),  // 21: snmpproxy.v1.GetHistoryResponse
+	(*TargetHistory)(nil),       // 22: snmpproxy.v1.TargetHistory
+	(*SubscribeRequest)(nil),    // 23: snmpproxy.v1.SubscribeRequest
+	(*SubscribeResponse)(nil),   // 24: snmpproxy.v1.SubscribeResponse
+	(*UnsubscribeRequest)(nil),  // 25: snmpproxy.v1.UnsubscribeRequest
+	(*UnsubscribeResponse)(nil), // 26: snmpproxy.v1.UnsubscribeResponse
 }
 var file_snmpproxy_proto_depIdxs = []int32{
-	7,  // 0: snmpproxy.v1.Envelope.auth:type_name -> snmpproxy.v1.AuthRequest
-	9,  // 1: snmpproxy.v1.Envelope.monitor:type_name -> snmpproxy.v1.MonitorRequest
-	11, // 2: snmpproxy.v1.Envelope.unmonitor:type_name -> snmpproxy.v1.UnmonitorRequest
-	13, // 3: snmpproxy.v1.Envelope.list_targets:type_name -> snmpproxy.v1.ListTargetsRequest
-	15, // 4: snmpproxy.v1.Envelope.get_target:type_name -> snmpproxy.v1.GetTargetRequest
-	17, // 5: snmpproxy.v1.Envelope.get_history:type_name -> snmpproxy.v1.GetHistoryRequest
-	20, // 6: snmpproxy.v1.Envelope.subscribe:type_name -> snmpproxy.v1.SubscribeRequest
-	22, // 7: snmpproxy.v1.Envelope.unsubscribe:type_name -> snmpproxy.v1.UnsubscribeRequest
-	8,  // 8: snmpproxy.v1.Envelope.auth_resp:type_name -> snmpproxy.v1.AuthResponse
-	10, // 9: snmpproxy.v1.Envelope.monitor_resp:type_name -> snmpproxy.v1.MonitorResponse
-	12, // 10: snmpproxy.v1.Envelope.unmonitor_resp:type_name -> snmpproxy.v1.UnmonitorResponse
-	14, // 11: snmpproxy.v1.Envelope.list_targets_resp:type_name -> snmpproxy.v1.ListTargetsResponse
-	16, // 12: snmpproxy.v1.Envelope.get_target_resp:type_name -> snmpproxy.v1.GetTargetResponse
-	18, // 13: snmpproxy.v1.Envelope.get_history_resp:type_name -> snmpproxy.v1.GetHistoryResponse
-	21, // 14: snmpproxy.v1.Envelope.subscribe_resp:type_name -> snmpproxy.v1.SubscribeResponse
-	23, // 15: snmpproxy.v1.Envelope.unsubscribe_resp:type_name -> snmpproxy.v1.UnsubscribeResponse
-	2,  // 16: snmpproxy.v1.Envelope.sample:type_name -> snmpproxy.v1.Sample
-	1,  // 17: snmpproxy.v1.Envelope.error:type_name -> snmpproxy.v1.Error
-	3,  // 18: snmpproxy.v1.SNMPConfig.v2c:type_name -> snmpproxy.v1.SNMPv2c
-	4,  // 19: snmpproxy.v1.SNMPConfig.v3:type_name -> snmpproxy.v1.SNMPv3
-	5,  // 20: snmpproxy.v1.MonitorRequest.snmp:type_name -> snmpproxy.v1.SNMPConfig
-	6,  // 21: snmpproxy.v1.ListTargetsResponse.targets:type_name -> snmpproxy.v1.Target
-	6,  // 22: snmpproxy.v1.GetTargetResponse.target:type_name -> snmpproxy.v1.Target
-	19, // 23: snmpproxy.v1.GetHistoryResponse.history:type_name -> snmpproxy.v1.TargetHistory
-	2,  // 24: snmpproxy.v1.TargetHistory.samples:type_name -> snmpproxy.v1.Sample
-	25, // [25:25] is the sub-list for method output_type
-	25, // [25:25] is the sub-list for method input_type
-	25, // [25:25] is the sub-list for extension type_name
-	25, // [25:25] is the sub-list for extension extendee
-	0,  // [0:25] is the sub-list for field type_name
+	10, // 0: snmpproxy.v1.Envelope.auth:type_name -> snmpproxy.v1.AuthRequest
+	12, // 1: snmpproxy.v1.Envelope.monitor:type_name -> snmpproxy.v1.MonitorRequest
+	14, // 2: snmpproxy.v1.Envelope.unmonitor:type_name -> snmpproxy.v1.UnmonitorRequest
+	16, // 3: snmpproxy.v1.Envelope.list_targets:type_name -> snmpproxy.v1.ListTargetsRequest
+	18, // 4: snmpproxy.v1.Envelope.get_target:type_name -> snmpproxy.v1.GetTargetRequest
+	20, // 5: snmpproxy.v1.Envelope.get_history:type_name -> snmpproxy.v1.GetHistoryRequest
+	23, // 6: snmpproxy.v1.Envelope.subscribe:type_name -> snmpproxy.v1.SubscribeRequest
+	25, // 7: snmpproxy.v1.Envelope.unsubscribe:type_name -> snmpproxy.v1.UnsubscribeRequest
+	11, // 8: snmpproxy.v1.Envelope.auth_resp:type_name -> snmpproxy.v1.AuthResponse
+	13, // 9: snmpproxy.v1.Envelope.monitor_resp:type_name -> snmpproxy.v1.MonitorResponse
+	15, // 10: snmpproxy.v1.Envelope.unmonitor_resp:type_name -> snmpproxy.v1.UnmonitorResponse
+	17, // 11: snmpproxy.v1.Envelope.list_targets_resp:type_name -> snmpproxy.v1.ListTargetsResponse
+	19, // 12: snmpproxy.v1.Envelope.get_target_resp:type_name -> snmpproxy.v1.GetTargetResponse
+	21, // 13: snmpproxy.v1.Envelope.get_history_resp:type_name -> snmpproxy.v1.GetHistoryResponse
+	24, // 14: snmpproxy.v1.Envelope.subscribe_resp:type_name -> snmpproxy.v1.SubscribeResponse
+	26, // 15: snmpproxy.v1.Envelope.unsubscribe_resp:type_name -> snmpproxy.v1.UnsubscribeResponse
+	5,  // 16: snmpproxy.v1.Envelope.sample:type_name -> snmpproxy.v1.Sample
+	4,  // 17: snmpproxy.v1.Envelope.error:type_name -> snmpproxy.v1.Error
+	2,  // 18: snmpproxy.v1.SNMPv3.security_level:type_name -> snmpproxy.v1.SecurityLevel
+	0,  // 19: snmpproxy.v1.SNMPv3.auth_protocol:type_name -> snmpproxy.v1.AuthProtocol
+	1,  // 20: snmpproxy.v1.SNMPv3.priv_protocol:type_name -> snmpproxy.v1.PrivProtocol
+	6,  // 21: snmpproxy.v1.SNMPConfig.v2c:type_name -> snmpproxy.v1.SNMPv2c
+	7,  // 22: snmpproxy.v1.SNMPConfig.v3:type_name -> snmpproxy.v1.SNMPv3
+	8,  // 23: snmpproxy.v1.MonitorRequest.snmp:type_name -> snmpproxy.v1.SNMPConfig
+	9,  // 24: snmpproxy.v1.ListTargetsResponse.targets:type_name -> snmpproxy.v1.Target
+	9,  // 25: snmpproxy.v1.GetTargetResponse.target:type_name -> snmpproxy.v1.Target
+	22, // 26: snmpproxy.v1.GetHistoryResponse.history:type_name -> snmpproxy.v1.TargetHistory
+	5,  // 27: snmpproxy.v1.TargetHistory.samples:type_name -> snmpproxy.v1.Sample
+	28, // [28:28] is the sub-list for method output_type
+	28, // [28:28] is the sub-list for method input_type
+	28, // [28:28] is the sub-list for extension type_name
+	28, // [28:28] is the sub-list for extension extendee
+	0,  // [0:28] is the sub-list for field type_name
 }
 
 func init() { file_snmpproxy_proto_init() }
@@ -1928,13 +2143,14 @@ func file_snmpproxy_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_snmpproxy_proto_rawDesc), len(file_snmpproxy_proto_rawDesc)),
-			NumEnums:      0,
+			NumEnums:      3,
 			NumMessages:   24,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_snmpproxy_proto_goTypes,
 		DependencyIndexes: file_snmpproxy_proto_depIdxs,
+		EnumInfos:         file_snmpproxy_proto_enumTypes,
 		MessageInfos:      file_snmpproxy_proto_msgTypes,
 	}.Build()
 	File_snmpproxy_proto = out.File
