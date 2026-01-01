@@ -1,5 +1,6 @@
 bin/
 gen/
+internal/proto/snmpproxy.pb.go
 certs/
 config.yaml
 *.log
