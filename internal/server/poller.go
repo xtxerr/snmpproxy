@@ -26,6 +26,7 @@ type Target struct {
 	LastError   string
 	ErrCount    int
 	Subscribers map[string]bool
+	Polling     bool // true wenn ein Poll in Arbeit ist (verhindert doppelte Jobs)
 
 	// Buffer
 	buffer   []Sample
@@ -70,6 +71,7 @@ func NewTarget(id string, req *pb.MonitorRequest, defaultBufSize uint32) *Target
 		Subscribers: make(map[string]bool),
 		buffer:      make([]Sample, bufSize),
 		bufSize:     bufSize,
+		Polling:     false,
 	}
 }
 
@@ -137,9 +139,13 @@ func (t *Target) WriteSample(s Sample) {
 
 // WriteSampleAndGetSubscribers atomically writes a sample and returns subscribers.
 // This prevents race conditions between writing and getting subscribers.
+// Also resets the Polling flag to allow the next poll to be scheduled.
 func (t *Target) WriteSampleAndGetSubscribers(s Sample) []string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	// Reset polling flag - dieser Poll ist abgeschlossen
+	t.Polling = false
 
 	// Write sample
 	t.buffer[t.writeIdx] = s
@@ -167,6 +173,35 @@ func (t *Target) WriteSampleAndGetSubscribers(s Sample) []string {
 		subs = append(subs, id)
 	}
 	return subs
+}
+
+// ResetPolling resets the polling flag (used when target not found during poll).
+func (t *Target) ResetPolling() {
+	t.mu.Lock()
+	t.Polling = false
+	t.mu.Unlock()
+}
+
+// TryStartPolling attempts to mark the target as polling.
+// Returns true if successful, false if already polling.
+func (t *Target) TryStartPolling(now int64) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Bereits ein Poll in Arbeit
+	if t.Polling {
+		return false
+	}
+
+	// Prüfe ob es Zeit für den nächsten Poll ist
+	nextPoll := t.LastPollMs + int64(t.IntervalMs)
+	if now < nextPoll {
+		return false
+	}
+
+	// Markiere als "polling in progress"
+	t.Polling = true
+	return true
 }
 
 // ReadLastN returns the last n samples (oldest first).
@@ -280,16 +315,21 @@ func (p *Poller) schedulePolls() {
 	defer p.server.mu.RUnlock()
 
 	for _, t := range p.server.targets {
-		t.mu.RLock()
-		nextPoll := t.LastPollMs + int64(t.IntervalMs)
-		t.mu.RUnlock()
+		// TryStartPolling prüft atomar:
+		// 1. Ob bereits ein Poll läuft (Polling flag)
+		// 2. Ob es Zeit für den nächsten Poll ist (LastPollMs + IntervalMs)
+		// Und setzt das Polling flag wenn erfolgreich
+		if !t.TryStartPolling(now) {
+			continue
+		}
 
-		if now >= nextPoll {
-			select {
-			case p.jobs <- PollJob{TargetID: t.ID}:
-			default:
-				// Queue full
-			}
+		// Versuche Job in Queue zu schieben
+		select {
+		case p.jobs <- PollJob{TargetID: t.ID}:
+			// OK - Job wurde eingereicht
+		default:
+			// Queue voll - Polling flag zurücksetzen damit später erneut versucht wird
+			t.ResetPolling()
 		}
 	}
 }
@@ -446,9 +486,11 @@ func (p *Poller) dispatchSample(r PollResult) {
 		return
 	}
 
-	// FIX: Use atomic write-and-get-subscribers to prevent race condition
-	// Previously: WriteSample() then GetSubscribers() with lock released between
-	// Now: Single atomic operation
+	// WriteSampleAndGetSubscribers:
+	// 1. Setzt Polling flag zurück (erlaubt nächsten Poll)
+	// 2. Schreibt Sample in Ring-Buffer
+	// 3. Gibt Subscriber-Liste zurück
+	// Alles atomar unter einem Lock
 	subs := t.WriteSampleAndGetSubscribers(Sample{
 		TimestampMs: r.TimestampMs,
 		Counter:     r.Counter,
