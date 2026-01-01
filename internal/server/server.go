@@ -346,12 +346,13 @@ func (srv *Server) handleMonitor(sess *Session, id uint64, req *pb.MonitorReques
 	key := fmt.Sprintf("%s:%d/%s", req.Host, port, req.Oid)
 
 	srv.mu.Lock()
-	defer srv.mu.Unlock()
 
 	// Check existing
 	if existingID, ok := srv.targetIndex[key]; ok {
 		t := srv.targets[existingID]
 		t.AddOwner(sess.ID) // Session wird Owner (hält Target am Leben)
+		srv.mu.Unlock()
+
 		sess.Send(&pb.Envelope{
 			Id: id,
 			Payload: &pb.Envelope_MonitorResp{
@@ -369,6 +370,10 @@ func (srv *Server) handleMonitor(sess *Session, id uint64, req *pb.MonitorReques
 
 	srv.targets[targetID] = t
 	srv.targetIndex[key] = targetID
+	srv.mu.Unlock()
+
+	// Target zum Scheduler hinzufügen (außerhalb des Locks!)
+	srv.poller.AddTarget(targetID, t.IntervalMs)
 
 	sess.Send(&pb.Envelope{
 		Id: id,
@@ -422,10 +427,10 @@ func validateSNMPConfig(cfg *pb.SNMPConfig) error {
 
 func (srv *Server) handleUnmonitor(sess *Session, id uint64, req *pb.UnmonitorRequest) {
 	srv.mu.Lock()
-	defer srv.mu.Unlock()
 
 	t, ok := srv.targets[req.TargetId]
 	if !ok {
+		srv.mu.Unlock()
 		sess.Send(wire.NewError(id, wire.ErrTargetNotFound, "target not found"))
 		return
 	}
@@ -434,10 +439,17 @@ func (srv *Server) handleUnmonitor(sess *Session, id uint64, req *pb.UnmonitorRe
 	sess.Unsubscribe(req.TargetId) // Auch Live-Updates stoppen
 
 	// Remove target if no owners
-	if !t.HasOwners() {
+	shouldRemove := !t.HasOwners()
+	if shouldRemove {
 		delete(srv.targets, req.TargetId)
 		delete(srv.targetIndex, t.Key())
 		log.Printf("Removed target %s (no owners)", req.TargetId)
+	}
+	srv.mu.Unlock()
+
+	// Target vom Scheduler entfernen (außerhalb des Locks!)
+	if shouldRemove {
+		srv.poller.RemoveTarget(req.TargetId)
 	}
 
 	sess.Send(&pb.Envelope{
@@ -637,14 +649,21 @@ func (srv *Server) cleanupSessions() {
 
 func (srv *Server) cleanupTargets() {
 	srv.mu.Lock()
-	defer srv.mu.Unlock()
 
+	var toRemove []string
 	for id, t := range srv.targets {
 		if !t.HasOwners() {
+			toRemove = append(toRemove, id)
 			delete(srv.targets, id)
 			delete(srv.targetIndex, t.Key())
 			log.Printf("Removed orphan target %s", id)
 		}
+	}
+	srv.mu.Unlock()
+
+	// Targets vom Scheduler entfernen (außerhalb des Locks!)
+	for _, id := range toRemove {
+		srv.poller.RemoveTarget(id)
 	}
 }
 

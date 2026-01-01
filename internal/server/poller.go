@@ -1,7 +1,9 @@
 package server
 
 import (
+	"container/heap"
 	"fmt"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -26,7 +28,6 @@ type Target struct {
 	LastError  string
 	ErrCount   int
 	Owners     map[string]bool // Sessions die dieses Target "besitzen" (via monitor)
-	Polling    bool            // true wenn ein Poll in Arbeit ist
 
 	// Buffer
 	buffer   []Sample
@@ -71,7 +72,6 @@ func NewTarget(id string, req *pb.MonitorRequest, defaultBufSize uint32) *Target
 		Owners:     make(map[string]bool),
 		buffer:     make([]Sample, bufSize),
 		bufSize:    bufSize,
-		Polling:    false,
 	}
 }
 
@@ -124,9 +124,6 @@ func (t *Target) WriteSample(s Sample) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Reset polling flag
-	t.Polling = false
-
 	t.buffer[t.writeIdx] = s
 	t.writeIdx = (t.writeIdx + 1) % t.bufSize
 	if t.count < t.bufSize {
@@ -145,35 +142,6 @@ func (t *Target) WriteSample(s Sample) {
 			t.State = "unreachable"
 		}
 	}
-}
-
-// ResetPolling resets the polling flag (used when target not found during poll).
-func (t *Target) ResetPolling() {
-	t.mu.Lock()
-	t.Polling = false
-	t.mu.Unlock()
-}
-
-// TryStartPolling attempts to mark the target as polling.
-// Returns true if successful, false if already polling or not time yet.
-func (t *Target) TryStartPolling(now int64) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	// Bereits ein Poll in Arbeit
-	if t.Polling {
-		return false
-	}
-
-	// Prüfe ob es Zeit für den nächsten Poll ist
-	nextPoll := t.LastPollMs + int64(t.IntervalMs)
-	if now < nextPoll {
-		return false
-	}
-
-	// Markiere als "polling in progress"
-	t.Polling = true
-	return true
 }
 
 // ReadLastN returns the last n samples (oldest first).
@@ -211,10 +179,66 @@ func (t *Target) ToProto() *pb.Target {
 		State:           t.State,
 		LastPollMs:      t.LastPollMs,
 		LastError:       t.LastError,
-		Subscribers:     int32(len(t.Owners)), // Für Protokoll-Kompatibilität
+		Subscribers:     int32(len(t.Owners)),
 		SamplesBuffered: int32(t.count),
 	}
 }
+
+// ============================================================================
+// Heap-based Scheduler
+// ============================================================================
+
+// PollItem represents a target in the scheduler heap.
+type PollItem struct {
+	TargetID   string
+	NextPollMs int64 // Wann der nächste Poll fällig ist
+	IntervalMs int64 // Poll-Interval
+	Polling    bool  // true wenn Poll gerade läuft
+	index      int   // Index im Heap (für heap.Fix/Remove)
+}
+
+// PollHeap implements heap.Interface - Min-Heap sortiert nach NextPollMs.
+type PollHeap []*PollItem
+
+func (h PollHeap) Len() int { return len(h) }
+
+func (h PollHeap) Less(i, j int) bool {
+	return h[i].NextPollMs < h[j].NextPollMs
+}
+
+func (h PollHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].index = i
+	h[j].index = j
+}
+
+func (h *PollHeap) Push(x any) {
+	item := x.(*PollItem)
+	item.index = len(*h)
+	*h = append(*h, item)
+}
+
+func (h *PollHeap) Pop() any {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	old[n-1] = nil // Avoid memory leak
+	item.index = -1
+	*h = old[0 : n-1]
+	return item
+}
+
+// Peek returns the next item without removing it.
+func (h PollHeap) Peek() *PollItem {
+	if len(h) == 0 {
+		return nil
+	}
+	return h[0]
+}
+
+// ============================================================================
+// Poll Job & Result
+// ============================================================================
 
 // PollJob is a job for the worker pool.
 type PollJob struct {
@@ -232,32 +256,50 @@ type PollResult struct {
 	PollMs      int32
 }
 
-// Poller manages SNMP polling with a worker pool.
+// ============================================================================
+// Poller
+// ============================================================================
+
+// Poller manages SNMP polling with a heap-based scheduler and worker pool.
 type Poller struct {
 	server   *Server
 	jobs     chan PollJob
 	results  chan PollResult
 	shutdown chan struct{}
 	workers  int
+
+	// Heap-basierter Scheduler
+	mu      sync.Mutex
+	heap    PollHeap
+	heapIdx map[string]*PollItem // targetID -> PollItem für O(1) Lookup
+	wakeup  chan struct{}        // Signal wenn neues Target hinzugefügt
 }
 
-// NewPoller creates a new poller.
+// NewPoller creates a new poller with heap-based scheduling.
 func NewPoller(srv *Server, workers, queueSize int) *Poller {
-	return &Poller{
+	p := &Poller{
 		server:   srv,
 		jobs:     make(chan PollJob, queueSize),
 		results:  make(chan PollResult, queueSize),
 		shutdown: make(chan struct{}),
 		workers:  workers,
+		heap:     make(PollHeap, 0),
+		heapIdx:  make(map[string]*PollItem),
+		wakeup:   make(chan struct{}, 1),
 	}
+	heap.Init(&p.heap)
+	return p
 }
 
-// Start starts the poller workers and scheduler.
+// Start starts the poller workers, scheduler, and dispatcher.
 func (p *Poller) Start() {
+	// Worker-Pool starten
 	for i := 0; i < p.workers; i++ {
 		go p.worker()
 	}
+	// Heap-basierter Scheduler
 	go p.scheduler()
+	// Ergebnis-Dispatcher
 	go p.dispatcher()
 }
 
@@ -266,51 +308,197 @@ func (p *Poller) Stop() {
 	close(p.shutdown)
 }
 
-func (p *Poller) scheduler() {
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
+// AddTarget fügt ein Target zum Scheduler hinzu.
+// Verwendet Jitter um Thundering-Herd zu vermeiden.
+func (p *Poller) AddTarget(targetID string, intervalMs uint32) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
-	for {
-		select {
-		case <-ticker.C:
-			p.schedulePolls()
-		case <-p.shutdown:
-			return
-		}
+	// Bereits vorhanden?
+	if _, exists := p.heapIdx[targetID]; exists {
+		return
+	}
+
+	interval := int64(intervalMs)
+
+	// Jitter: Verteile initialen Poll zufällig über das Interval
+	// Damit nicht alle Targets gleichzeitig pollen
+	jitter := rand.Int63n(interval)
+
+	item := &PollItem{
+		TargetID:   targetID,
+		NextPollMs: time.Now().UnixMilli() + jitter,
+		IntervalMs: interval,
+		Polling:    false,
+	}
+
+	heap.Push(&p.heap, item)
+	p.heapIdx[targetID] = item
+
+	// Scheduler aufwecken falls er schläft
+	p.signalWakeup()
+}
+
+// RemoveTarget entfernt ein Target vom Scheduler.
+func (p *Poller) RemoveTarget(targetID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	item, ok := p.heapIdx[targetID]
+	if !ok {
+		return
+	}
+
+	// Nur aus Heap entfernen wenn noch drin (index >= 0)
+	if item.index >= 0 {
+		heap.Remove(&p.heap, item.index)
+	}
+	delete(p.heapIdx, targetID)
+}
+
+// UpdateInterval ändert das Poll-Interval eines Targets.
+func (p *Poller) UpdateInterval(targetID string, newIntervalMs uint32) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	item, ok := p.heapIdx[targetID]
+	if !ok {
+		return
+	}
+
+	item.IntervalMs = int64(newIntervalMs)
+	// NextPollMs bleibt gleich - neues Interval gilt ab nächstem Poll
+}
+
+// signalWakeup sendet ein nicht-blockierendes Signal an den Scheduler.
+func (p *Poller) signalWakeup() {
+	select {
+	case p.wakeup <- struct{}{}:
+	default:
+		// Channel ist bereits voll, Scheduler wird sowieso aufwachen
 	}
 }
 
-func (p *Poller) schedulePolls() {
+// scheduler ist der Heap-basierte Scheduler.
+// Schläft bis zum nächsten fälligen Poll statt busy-waiting.
+func (p *Poller) scheduler() {
+	timer := time.NewTimer(time.Hour) // Initial lang, wird sofort überschrieben
+	defer timer.Stop()
+
+	for {
+		p.mu.Lock()
+
+		// Nächstes fälliges Target finden
+		next := p.heap.Peek()
+
+		if next == nil {
+			// Keine Targets - warte auf Signal oder Shutdown
+			p.mu.Unlock()
+			select {
+			case <-p.wakeup:
+				continue
+			case <-p.shutdown:
+				return
+			}
+		}
+
+		now := time.Now().UnixMilli()
+		sleepMs := next.NextPollMs - now
+		p.mu.Unlock()
+
+		if sleepMs > 0 {
+			// Schlafe bis zum nächsten Poll
+			timer.Reset(time.Duration(sleepMs) * time.Millisecond)
+			select {
+			case <-timer.C:
+				// Zeit für Poll
+			case <-p.wakeup:
+				// Neues Target oder Änderung - neu prüfen
+				continue
+			case <-p.shutdown:
+				return
+			}
+		}
+
+		// Alle fälligen Targets verarbeiten
+		p.processDueTargets()
+	}
+}
+
+// processDueTargets verarbeitet alle Targets deren NextPollMs <= now ist.
+func (p *Poller) processDueTargets() {
 	now := time.Now().UnixMilli()
 
-	p.server.mu.RLock()
-	defer p.server.mu.RUnlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
-	for _, t := range p.server.targets {
-		// TryStartPolling prüft atomar:
-		// 1. Ob bereits ein Poll läuft (Polling flag)
-		// 2. Ob es Zeit für den nächsten Poll ist (LastPollMs + IntervalMs)
-		// Und setzt das Polling flag wenn erfolgreich
-		if !t.TryStartPolling(now) {
+	for p.heap.Len() > 0 {
+		next := p.heap.Peek()
+
+		// Nicht fällig? Fertig.
+		if next.NextPollMs > now {
+			break
+		}
+
+		// Pop aus dem Heap
+		item := heap.Pop(&p.heap).(*PollItem)
+
+		// Bereits am Pollen? Überspringe (sollte nicht passieren)
+		if item.Polling {
 			continue
 		}
 
-		// Versuche Job in Queue zu schieben
+		// Als "polling" markieren
+		item.Polling = true
+
+		// Job erstellen
 		select {
-		case p.jobs <- PollJob{TargetID: t.ID}:
-			// OK - Job wurde eingereicht
+		case p.jobs <- PollJob{TargetID: item.TargetID}:
+			// Erfolgreich eingereicht
+			// Target ist jetzt aus dem Heap, wird nach Completion wieder eingefügt
 		default:
-			// Queue voll - Polling flag zurücksetzen damit später erneut versucht wird
-			t.ResetPolling()
+			// Queue voll - sofort wieder einreihen mit Retry-Delay
+			item.Polling = false
+			item.NextPollMs = now + 10
+			heap.Push(&p.heap, item)
 		}
 	}
 }
 
+// MarkPollComplete wird aufgerufen wenn ein Poll abgeschlossen ist.
+// Setzt NextPollMs und fügt das Target wieder in den Heap ein.
+func (p *Poller) MarkPollComplete(targetID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	item, ok := p.heapIdx[targetID]
+	if !ok {
+		// Target wurde zwischenzeitlich entfernt
+		return
+	}
+
+	now := time.Now().UnixMilli()
+	item.NextPollMs = now + item.IntervalMs
+	item.Polling = false
+
+	// Wieder in den Heap einfügen
+	heap.Push(&p.heap, item)
+
+	// Scheduler aufwecken
+	p.signalWakeup()
+}
+
+// worker verarbeitet Poll-Jobs aus der Queue.
 func (p *Poller) worker() {
 	for {
 		select {
 		case job := <-p.jobs:
 			result := p.poll(job.TargetID)
+
+			// Poll abgeschlossen - Scheduler informieren
+			p.MarkPollComplete(job.TargetID)
+
+			// Ergebnis an Dispatcher
 			select {
 			case p.results <- result:
 			case <-p.shutdown:
@@ -322,6 +510,7 @@ func (p *Poller) worker() {
 	}
 }
 
+// poll führt den eigentlichen SNMP-Poll durch.
 func (p *Poller) poll(targetID string) PollResult {
 	start := time.Now()
 
@@ -364,7 +553,6 @@ func (p *Poller) poll(targetID string) PollResult {
 			snmp.SecurityModel = gosnmp.UserSecurityModel
 			snmp.ContextName = v3.ContextName
 
-			// Security level
 			switch v3.SecurityLevel {
 			case pb.SecurityLevel_SECURITY_LEVEL_NO_AUTH_NO_PRIV:
 				snmp.MsgFlags = gosnmp.NoAuthNoPriv
@@ -439,6 +627,7 @@ func (p *Poller) poll(targetID string) PollResult {
 	return result
 }
 
+// dispatcher verteilt Poll-Ergebnisse an subscribed Sessions.
 func (p *Poller) dispatcher() {
 	for {
 		select {
@@ -450,6 +639,7 @@ func (p *Poller) dispatcher() {
 	}
 }
 
+// dispatchSample schreibt das Sample in den Buffer und sendet an Subscriber.
 func (p *Poller) dispatchSample(r PollResult) {
 	p.server.mu.RLock()
 	t, ok := p.server.targets[r.TargetID]
@@ -458,7 +648,7 @@ func (p *Poller) dispatchSample(r PollResult) {
 		return
 	}
 
-	// Write sample to ring buffer (also resets Polling flag)
+	// Write sample to ring buffer
 	t.WriteSample(Sample{
 		TimestampMs: r.TimestampMs,
 		Counter:     r.Counter,
@@ -469,9 +659,6 @@ func (p *Poller) dispatchSample(r PollResult) {
 	})
 
 	// Sammle alle Sessions die für dieses Target subscribed sind
-	// WICHTIG: Wir iterieren über ALLE Sessions, nicht nur über t.Owners
-	// Denn Owners = "wer hält das Target am Leben" (via monitor)
-	//      Subscribers = "wer will Live-Updates" (via subscribe, gespeichert in Session)
 	var subscribedSessions []*Session
 	for _, sess := range p.server.sessions {
 		if !sess.IsLost() && sess.IsSubscribed(r.TargetID) {
@@ -506,6 +693,10 @@ func (p *Poller) dispatchSample(r PollResult) {
 		sess.Send(env)
 	}
 }
+
+// ============================================================================
+// SNMP Protocol Mapping
+// ============================================================================
 
 func mapAuthProtocol(p pb.AuthProtocol) gosnmp.SnmpV3AuthProtocol {
 	switch p {
