@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	pb "github.com/xtxerr/snmpproxy/internal/proto"
 	"github.com/xtxerr/snmpproxy/config"
+	pb "github.com/xtxerr/snmpproxy/internal/proto"
 	"github.com/xtxerr/snmpproxy/internal/wire"
 )
 
@@ -41,7 +41,7 @@ type Session struct {
 	CreatedAt time.Time
 	LostAt    *time.Time
 
-	subscriptions map[string]bool
+	subscriptions map[string]bool // Targets für die diese Session Live-Updates will
 	sendCh        chan *pb.Envelope
 }
 
@@ -58,7 +58,7 @@ func NewSession(id, tokenID string, conn net.Conn, w *wire.Conn) *Session {
 	}
 }
 
-// Subscribe adds a target subscription.
+// Subscribe adds a target subscription (for live updates).
 func (s *Session) Subscribe(targetID string) {
 	s.mu.Lock()
 	s.subscriptions[targetID] = true
@@ -84,7 +84,7 @@ func (s *Session) UnsubscribeAll() []string {
 	return ids
 }
 
-// IsSubscribed checks if subscribed to a target.
+// IsSubscribed checks if subscribed to a target (for live updates).
 func (s *Session) IsSubscribed(targetID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -351,7 +351,7 @@ func (srv *Server) handleMonitor(sess *Session, id uint64, req *pb.MonitorReques
 	// Check existing
 	if existingID, ok := srv.targetIndex[key]; ok {
 		t := srv.targets[existingID]
-		t.AddSubscriber(sess.ID)
+		t.AddOwner(sess.ID) // Session wird Owner (hält Target am Leben)
 		sess.Send(&pb.Envelope{
 			Id: id,
 			Payload: &pb.Envelope_MonitorResp{
@@ -365,7 +365,7 @@ func (srv *Server) handleMonitor(sess *Session, id uint64, req *pb.MonitorReques
 	// Create new
 	targetID := srv.genID()
 	t := NewTarget(targetID, req, srv.cfg.SNMP.BufferSize)
-	t.AddSubscriber(sess.ID)
+	t.AddOwner(sess.ID) // Session wird Owner
 
 	srv.targets[targetID] = t
 	srv.targetIndex[key] = targetID
@@ -430,14 +430,14 @@ func (srv *Server) handleUnmonitor(sess *Session, id uint64, req *pb.UnmonitorRe
 		return
 	}
 
-	t.RemoveSubscriber(sess.ID)
-	sess.Unsubscribe(req.TargetId)
+	t.RemoveOwner(sess.ID)
+	sess.Unsubscribe(req.TargetId) // Auch Live-Updates stoppen
 
-	// Remove target if no subscribers
-	if !t.HasSubscribers() {
+	// Remove target if no owners
+	if !t.HasOwners() {
 		delete(srv.targets, req.TargetId)
 		delete(srv.targetIndex, t.Key())
-		log.Printf("Removed target %s (no subscribers)", req.TargetId)
+		log.Printf("Removed target %s (no owners)", req.TargetId)
 	}
 
 	sess.Send(&pb.Envelope{
@@ -530,18 +530,19 @@ func (srv *Server) handleGetHistory(sess *Session, id uint64, req *pb.GetHistory
 	})
 }
 
+// handleSubscribe - Session will Live-Updates für die angegebenen Targets
+// WICHTIG: Dies fügt NICHT zu t.Owners hinzu! Nur sess.subscriptions wird aktualisiert.
 func (srv *Server) handleSubscribe(sess *Session, id uint64, req *pb.SubscribeRequest) {
-	srv.mu.Lock()
-	defer srv.mu.Unlock()
+	srv.mu.RLock()
+	defer srv.mu.RUnlock()
 
 	var subscribed []string
 	for _, targetID := range req.TargetIds {
-		t, ok := srv.targets[targetID]
+		_, ok := srv.targets[targetID]
 		if !ok {
 			continue
 		}
-		sess.Subscribe(targetID)
-		t.AddSubscriber(sess.ID)
+		sess.Subscribe(targetID) // Nur Session-Seite aktualisieren
 		subscribed = append(subscribed, targetID)
 	}
 
@@ -553,20 +554,17 @@ func (srv *Server) handleSubscribe(sess *Session, id uint64, req *pb.SubscribeRe
 	})
 }
 
+// handleUnsubscribe - Session will keine Live-Updates mehr für die angegebenen Targets
+// WICHTIG: Dies entfernt NICHT aus t.Owners! Nur sess.subscriptions wird aktualisiert.
 func (srv *Server) handleUnsubscribe(sess *Session, id uint64, req *pb.UnsubscribeRequest) {
-	srv.mu.Lock()
-	defer srv.mu.Unlock()
-
+	// Kein Lock auf srv.mu nötig, da wir nur sess.subscriptions ändern
 	targetIDs := req.TargetIds
 	if len(targetIDs) == 0 {
 		targetIDs = sess.GetSubscriptions()
 	}
 
 	for _, targetID := range targetIDs {
-		sess.Unsubscribe(targetID)
-		if t, ok := srv.targets[targetID]; ok {
-			t.RemoveSubscriber(sess.ID)
-		}
+		sess.Unsubscribe(targetID) // Nur Session-Seite aktualisieren
 	}
 
 	sess.Send(&pb.Envelope{
@@ -627,10 +625,9 @@ func (srv *Server) cleanupSessions() {
 
 	for id, sess := range srv.sessions {
 		if sess.IsLost() && sess.LostDuration() > window {
-			for targetID := range sess.subscriptions {
-				if t, ok := srv.targets[targetID]; ok {
-					t.RemoveSubscriber(id)
-				}
+			// Session aus Owner-Listen entfernen
+			for _, t := range srv.targets {
+				t.RemoveOwner(id)
 			}
 			delete(srv.sessions, id)
 			log.Printf("Removed expired session %s", id)
@@ -643,7 +640,7 @@ func (srv *Server) cleanupTargets() {
 	defer srv.mu.Unlock()
 
 	for id, t := range srv.targets {
-		if !t.HasSubscribers() {
+		if !t.HasOwners() {
 			delete(srv.targets, id)
 			delete(srv.targetIndex, t.Key())
 			log.Printf("Removed orphan target %s", id)

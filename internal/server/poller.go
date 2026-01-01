@@ -21,12 +21,12 @@ type Target struct {
 	SNMP       *pb.SNMPConfig
 
 	// Runtime
-	State       string // "polling", "unreachable", "error"
-	LastPollMs  int64
-	LastError   string
-	ErrCount    int
-	Subscribers map[string]bool
-	Polling     bool // true wenn ein Poll in Arbeit ist (verhindert doppelte Jobs)
+	State      string // "polling", "unreachable", "error"
+	LastPollMs int64
+	LastError  string
+	ErrCount   int
+	Owners     map[string]bool // Sessions die dieses Target "besitzen" (via monitor)
+	Polling    bool            // true wenn ein Poll in Arbeit ist
 
 	// Buffer
 	buffer   []Sample
@@ -61,17 +61,17 @@ func NewTarget(id string, req *pb.MonitorRequest, defaultBufSize uint32) *Target
 	}
 
 	return &Target{
-		ID:          id,
-		Host:        req.Host,
-		Port:        port,
-		OID:         req.Oid,
-		IntervalMs:  interval,
-		SNMP:        req.Snmp,
-		State:       "polling",
-		Subscribers: make(map[string]bool),
-		buffer:      make([]Sample, bufSize),
-		bufSize:     bufSize,
-		Polling:     false,
+		ID:         id,
+		Host:       req.Host,
+		Port:       port,
+		OID:        req.Oid,
+		IntervalMs: interval,
+		SNMP:       req.Snmp,
+		State:      "polling",
+		Owners:     make(map[string]bool),
+		buffer:     make([]Sample, bufSize),
+		bufSize:    bufSize,
+		Polling:    false,
 	}
 }
 
@@ -80,36 +80,43 @@ func (t *Target) Key() string {
 	return fmt.Sprintf("%s:%d/%s", t.Host, t.Port, t.OID)
 }
 
-// AddSubscriber adds a session as subscriber.
-func (t *Target) AddSubscriber(sessionID string) {
+// AddOwner adds a session as owner (keeps target alive).
+func (t *Target) AddOwner(sessionID string) {
 	t.mu.Lock()
-	t.Subscribers[sessionID] = true
+	t.Owners[sessionID] = true
 	t.mu.Unlock()
 }
 
-// RemoveSubscriber removes a session from subscribers.
-func (t *Target) RemoveSubscriber(sessionID string) {
+// RemoveOwner removes a session from owners.
+func (t *Target) RemoveOwner(sessionID string) {
 	t.mu.Lock()
-	delete(t.Subscribers, sessionID)
+	delete(t.Owners, sessionID)
 	t.mu.Unlock()
 }
 
-// GetSubscribers returns a copy of subscriber IDs.
-func (t *Target) GetSubscribers() []string {
+// GetOwners returns a copy of owner IDs.
+func (t *Target) GetOwners() []string {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	subs := make([]string, 0, len(t.Subscribers))
-	for id := range t.Subscribers {
-		subs = append(subs, id)
+	owners := make([]string, 0, len(t.Owners))
+	for id := range t.Owners {
+		owners = append(owners, id)
 	}
-	return subs
+	return owners
 }
 
-// HasSubscribers returns true if any subscribers exist.
-func (t *Target) HasSubscribers() bool {
+// HasOwners returns true if any owners exist.
+func (t *Target) HasOwners() bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return len(t.Subscribers) > 0
+	return len(t.Owners) > 0
+}
+
+// OwnerCount returns the number of owners.
+func (t *Target) OwnerCount() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return len(t.Owners)
 }
 
 // WriteSample adds a sample to the ring buffer.
@@ -117,37 +124,9 @@ func (t *Target) WriteSample(s Sample) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	t.buffer[t.writeIdx] = s
-	t.writeIdx = (t.writeIdx + 1) % t.bufSize
-	if t.count < t.bufSize {
-		t.count++
-	}
-
-	t.LastPollMs = s.TimestampMs
-	if s.Valid {
-		t.State = "polling"
-		t.LastError = ""
-		t.ErrCount = 0
-	} else {
-		t.LastError = s.Error
-		t.ErrCount++
-		if t.ErrCount >= 3 {
-			t.State = "unreachable"
-		}
-	}
-}
-
-// WriteSampleAndGetSubscribers atomically writes a sample and returns subscribers.
-// This prevents race conditions between writing and getting subscribers.
-// Also resets the Polling flag to allow the next poll to be scheduled.
-func (t *Target) WriteSampleAndGetSubscribers(s Sample) []string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	// Reset polling flag - dieser Poll ist abgeschlossen
+	// Reset polling flag
 	t.Polling = false
 
-	// Write sample
 	t.buffer[t.writeIdx] = s
 	t.writeIdx = (t.writeIdx + 1) % t.bufSize
 	if t.count < t.bufSize {
@@ -166,13 +145,6 @@ func (t *Target) WriteSampleAndGetSubscribers(s Sample) []string {
 			t.State = "unreachable"
 		}
 	}
-
-	// Get subscribers while still holding the lock
-	subs := make([]string, 0, len(t.Subscribers))
-	for id := range t.Subscribers {
-		subs = append(subs, id)
-	}
-	return subs
 }
 
 // ResetPolling resets the polling flag (used when target not found during poll).
@@ -183,7 +155,7 @@ func (t *Target) ResetPolling() {
 }
 
 // TryStartPolling attempts to mark the target as polling.
-// Returns true if successful, false if already polling.
+// Returns true if successful, false if already polling or not time yet.
 func (t *Target) TryStartPolling(now int64) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -239,7 +211,7 @@ func (t *Target) ToProto() *pb.Target {
 		State:           t.State,
 		LastPollMs:      t.LastPollMs,
 		LastError:       t.LastError,
-		Subscribers:     int32(len(t.Subscribers)),
+		Subscribers:     int32(len(t.Owners)), // Für Protokoll-Kompatibilität
 		SamplesBuffered: int32(t.count),
 	}
 }
@@ -486,12 +458,8 @@ func (p *Poller) dispatchSample(r PollResult) {
 		return
 	}
 
-	// WriteSampleAndGetSubscribers:
-	// 1. Setzt Polling flag zurück (erlaubt nächsten Poll)
-	// 2. Schreibt Sample in Ring-Buffer
-	// 3. Gibt Subscriber-Liste zurück
-	// Alles atomar unter einem Lock
-	subs := t.WriteSampleAndGetSubscribers(Sample{
+	// Write sample to ring buffer (also resets Polling flag)
+	t.WriteSample(Sample{
 		TimestampMs: r.TimestampMs,
 		Counter:     r.Counter,
 		Text:        r.Text,
@@ -499,7 +467,23 @@ func (p *Poller) dispatchSample(r PollResult) {
 		Error:       r.Error,
 		PollMs:      r.PollMs,
 	})
+
+	// Sammle alle Sessions die für dieses Target subscribed sind
+	// WICHTIG: Wir iterieren über ALLE Sessions, nicht nur über t.Owners
+	// Denn Owners = "wer hält das Target am Leben" (via monitor)
+	//      Subscribers = "wer will Live-Updates" (via subscribe, gespeichert in Session)
+	var subscribedSessions []*Session
+	for _, sess := range p.server.sessions {
+		if !sess.IsLost() && sess.IsSubscribed(r.TargetID) {
+			subscribedSessions = append(subscribedSessions, sess)
+		}
+	}
 	p.server.mu.RUnlock()
+
+	// Keine Subscriber? Fertig.
+	if len(subscribedSessions) == 0 {
+		return
+	}
 
 	// Build sample envelope
 	env := &pb.Envelope{
@@ -517,15 +501,9 @@ func (p *Poller) dispatchSample(r PollResult) {
 		},
 	}
 
-	// Send to subscribers
-	for _, sessionID := range subs {
-		p.server.mu.RLock()
-		sess, ok := p.server.sessions[sessionID]
-		p.server.mu.RUnlock()
-
-		if ok && sess.IsSubscribed(r.TargetID) {
-			sess.Send(env)
-		}
+	// Send to all subscribed sessions
+	for _, sess := range subscribedSessions {
+		sess.Send(env)
 	}
 }
 
