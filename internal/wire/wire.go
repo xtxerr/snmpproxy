@@ -1,99 +1,58 @@
-// Package wire provides message framing for protobuf over TCP.
+// Package wire implements the snmpproxy wire protocol.
 package wire
 
 import (
-	"bufio"
-	"fmt"
 	"io"
-	"sync"
 
 	pb "github.com/xtxerr/snmpproxy/internal/proto"
 	"google.golang.org/protobuf/encoding/protodelim"
 )
 
-// MaxMessageSize limits message size to prevent memory exhaustion.
-const MaxMessageSize = 16 * 1024 * 1024 // 16 MB
+const MaxMessageSize = 10 * 1024 * 1024 // 10 MB
 
-// Reader reads length-delimited protobuf envelopes.
-type Reader struct {
-	r  *bufio.Reader
-	mu sync.Mutex
+// Error codes
+const (
+	ErrNotAuthenticated = 1
+	ErrInvalidRequest   = 2
+	ErrTargetNotFound   = 3
+	ErrInternal         = 4
+	ErrNotAuthorized    = 5
+)
+
+// Conn wraps a connection for reading/writing Envelopes.
+type Conn struct {
+	r io.Reader
+	w io.Writer
 }
 
-// NewReader creates a Reader wrapping the given io.Reader.
-func NewReader(r io.Reader) *Reader {
-	return &Reader{r: bufio.NewReader(r)}
+// NewConn creates a new wire connection.
+func NewConn(rw io.ReadWriter) *Conn {
+	return &Conn{r: rw, w: rw}
 }
 
-// Read reads and unmarshals the next envelope.
-func (r *Reader) Read() (*pb.Envelope, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
+// Read reads an Envelope from the connection.
+func (c *Conn) Read() (*pb.Envelope, error) {
 	env := &pb.Envelope{}
-	opts := protodelim.UnmarshalOptions{
-		MaxSize: MaxMessageSize,
-	}
-	if err := opts.UnmarshalFrom(r.r, env); err != nil {
-		return nil, fmt.Errorf("read envelope: %w", err)
+	opts := protodelim.UnmarshalOptions{MaxSize: MaxMessageSize}
+	if err := opts.UnmarshalFrom(c.r, env); err != nil {
+		return nil, err
 	}
 	return env, nil
 }
 
-// Writer writes length-delimited protobuf envelopes.
-type Writer struct {
-	w  io.Writer
-	mu sync.Mutex
+// Write writes an Envelope to the connection.
+func (c *Conn) Write(env *pb.Envelope) error {
+	_, err := protodelim.MarshalTo(c.w, env)
+	return err
 }
 
-// NewWriter creates a Writer wrapping the given io.Writer.
-func NewWriter(w io.Writer) *Writer {
-	return &Writer{w: w}
-}
-
-// Write marshals and writes an envelope.
-func (w *Writer) Write(env *pb.Envelope) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	if _, err := protodelim.MarshalTo(w.w, env); err != nil {
-		return fmt.Errorf("write envelope: %w", err)
-	}
-	return nil
-}
-
-// Conn combines Reader and Writer for bidirectional communication.
-type Conn struct {
-	*Reader
-	*Writer
-}
-
-// NewConn creates a Conn from an io.ReadWriter (e.g., net.Conn).
-func NewConn(rw io.ReadWriter) *Conn {
-	return &Conn{
-		Reader: NewReader(rw),
-		Writer: NewWriter(rw),
-	}
-}
-
-// Error codes
-const (
-	ErrUnknown         = 1
-	ErrAuthFailed      = 2
-	ErrNotAuthenticated = 3
-	ErrInvalidRequest  = 4
-	ErrTargetNotFound  = 5
-	ErrSNMP            = 6
-	ErrInternal        = 7
-)
-
-// NewError creates an error envelope.
-func NewError(id uint64, code int32, msg string) *pb.Envelope {
+// NewError creates an error Envelope.
+func NewError(id uint64, code int, msg string) *pb.Envelope {
 	return &pb.Envelope{
 		Id: id,
 		Payload: &pb.Envelope_Error{
 			Error: &pb.Error{
-				Code:    code,
+				Code:    int32(code),
 				Message: msg,
 			},
 		},

@@ -22,6 +22,13 @@ message Envelope {
     SubscribeRequest subscribe = 16;
     UnsubscribeRequest unsubscribe = 17;
     
+    // NEW: Status & Config (Client → Server)
+    GetServerStatusRequest get_server_status = 18;
+    GetSessionInfoRequest get_session_info = 19;
+    UpdateTargetRequest update_target = 20;
+    GetConfigRequest get_config = 21;
+    SetConfigRequest set_config = 22;
+    
     // Server → Client
     AuthResponse auth_resp = 50;
     MonitorResponse monitor_resp = 51;
@@ -31,6 +38,13 @@ message Envelope {
     GetHistoryResponse get_history_resp = 55;
     SubscribeResponse subscribe_resp = 56;
     UnsubscribeResponse unsubscribe_resp = 57;
+    
+    // NEW: Status & Config (Server → Client)
+    GetServerStatusResponse get_server_status_resp = 58;
+    GetSessionInfoResponse get_session_info_resp = 59;
+    UpdateTargetResponse update_target_resp = 60;
+    GetConfigResponse get_config_resp = 61;
+    SetConfigResponse set_config_resp = 62;
     
     // Server → Client (Push, id=0)
     Sample sample = 80;
@@ -135,6 +149,15 @@ message Target {
   string last_error = 12;
   int32 subscribers = 13;
   int32 samples_buffered = 14;
+  
+  // NEW: Extended statistics
+  int64 created_at_ms = 20;
+  int64 polls_total = 21;
+  int64 polls_success = 22;
+  int64 polls_failed = 23;
+  int32 avg_poll_ms = 24;
+  int32 min_poll_ms = 25;
+  int32 max_poll_ms = 26;
 }
 
 // ============================================================================
@@ -234,4 +257,105 @@ message UnsubscribeRequest {
 
 message UnsubscribeResponse {
   bool ok = 1;
+}
+
+// ============================================================================
+// NEW: Server Status
+// ============================================================================
+
+message GetServerStatusRequest {}
+
+message GetServerStatusResponse {
+  // General
+  string version = 1;
+  int64 uptime_ms = 2;
+  int64 started_at_ms = 3;
+  
+  // Sessions
+  int32 sessions_active = 10;
+  int32 sessions_lost = 11;
+  
+  // Targets
+  int32 targets_total = 20;
+  int32 targets_polling = 21;
+  int32 targets_unreachable = 22;
+  
+  // Poller
+  int32 poller_workers = 30;
+  int32 poller_queue_used = 31;
+  int32 poller_queue_capacity = 32;
+  int32 poller_heap_size = 33;
+  
+  // Statistics (since start)
+  int64 polls_total = 40;
+  int64 polls_success = 41;
+  int64 polls_failed = 42;
+}
+
+// ============================================================================
+// NEW: Session Info
+// ============================================================================
+
+message GetSessionInfoRequest {}
+
+message GetSessionInfoResponse {
+  string session_id = 1;
+  string token_id = 2;
+  int64 created_at_ms = 3;
+  int64 connected_at_ms = 4;
+  repeated string owned_targets = 10;
+  repeated string subscribed_targets = 11;
+}
+
+// ============================================================================
+// NEW: Update Target
+// ============================================================================
+
+message UpdateTargetRequest {
+  string target_id = 1;
+  optional uint32 interval_ms = 2;
+  optional uint32 timeout_ms = 3;
+  optional uint32 retries = 4;
+}
+
+message UpdateTargetResponse {
+  bool ok = 1;
+  Target target = 2;
+  string message = 3;
+}
+
+// ============================================================================
+// NEW: Runtime Config
+// ============================================================================
+
+message GetConfigRequest {}
+
+message GetConfigResponse {
+  RuntimeConfig config = 1;
+}
+
+message SetConfigRequest {
+  optional uint32 default_timeout_ms = 1;
+  optional uint32 default_retries = 2;
+  optional uint32 default_buffer_size = 3;
+  optional uint32 min_interval_ms = 4;
+}
+
+message SetConfigResponse {
+  bool ok = 1;
+  RuntimeConfig config = 2;
+  string message = 3;
+}
+
+message RuntimeConfig {
+  // Changeable at runtime
+  uint32 default_timeout_ms = 1;
+  uint32 default_retries = 2;
+  uint32 default_buffer_size = 3;
+  uint32 min_interval_ms = 4;
+  
+  // Read-only (set at startup)
+  int32 poller_workers = 10;
+  int32 poller_queue_size = 11;
+  uint32 reconnect_window_sec = 12;
 }

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,6 +16,9 @@ import (
 	pb "github.com/xtxerr/snmpproxy/internal/proto"
 	"github.com/xtxerr/snmpproxy/internal/wire"
 )
+
+// Version is set at build time via ldflags
+var Version = "dev"
 
 // Server is the SNMP proxy server.
 type Server struct {
@@ -26,6 +30,19 @@ type Server struct {
 	sessions    map[string]*Session
 	targets     map[string]*Target
 	targetIndex map[string]string // "host:port/oid" -> targetID
+
+	// Runtime config (can be changed at runtime)
+	runtimeMu         sync.RWMutex
+	defaultTimeoutMs  uint32
+	defaultRetries    uint32
+	defaultBufferSize uint32
+	minIntervalMs     uint32
+
+	// Statistics
+	startedAt   time.Time
+	pollsTotal  atomic.Int64
+	pollsOK     atomic.Int64
+	pollsFailed atomic.Int64
 
 	shutdown chan struct{}
 }
@@ -146,11 +163,16 @@ func (s *Session) Close() {
 // New creates a new server.
 func New(cfg *config.Server) *Server {
 	srv := &Server{
-		cfg:         cfg,
-		sessions:    make(map[string]*Session),
-		targets:     make(map[string]*Target),
-		targetIndex: make(map[string]string),
-		shutdown:    make(chan struct{}),
+		cfg:               cfg,
+		sessions:          make(map[string]*Session),
+		targets:           make(map[string]*Target),
+		targetIndex:       make(map[string]string),
+		shutdown:          make(chan struct{}),
+		startedAt:         time.Now(),
+		defaultTimeoutMs:  cfg.SNMP.TimeoutMs,
+		defaultRetries:    cfg.SNMP.Retries,
+		defaultBufferSize: cfg.SNMP.BufferSize,
+		minIntervalMs:     100, // Default minimum 100ms
 	}
 	srv.poller = NewPoller(srv, cfg.Poller.Workers, cfg.Poller.QueueSize)
 	return srv
@@ -214,6 +236,16 @@ func (srv *Server) Shutdown() {
 		s.Close()
 	}
 	srv.mu.Unlock()
+}
+
+// RecordPoll records poll statistics.
+func (srv *Server) RecordPoll(success bool) {
+	srv.pollsTotal.Add(1)
+	if success {
+		srv.pollsOK.Add(1)
+	} else {
+		srv.pollsFailed.Add(1)
+	}
 }
 
 func (srv *Server) handleConn(conn net.Conn) {
@@ -322,6 +354,17 @@ func (srv *Server) handle(sess *Session, env *pb.Envelope) {
 		srv.handleSubscribe(sess, env.Id, p.Subscribe)
 	case *pb.Envelope_Unsubscribe:
 		srv.handleUnsubscribe(sess, env.Id, p.Unsubscribe)
+	// NEW handlers
+	case *pb.Envelope_GetServerStatus:
+		srv.handleGetServerStatus(sess, env.Id)
+	case *pb.Envelope_GetSessionInfo:
+		srv.handleGetSessionInfo(sess, env.Id)
+	case *pb.Envelope_UpdateTarget:
+		srv.handleUpdateTarget(sess, env.Id, p.UpdateTarget)
+	case *pb.Envelope_GetConfig:
+		srv.handleGetConfig(sess, env.Id)
+	case *pb.Envelope_SetConfig:
+		srv.handleSetConfig(sess, env.Id, p.SetConfig)
 	default:
 		sess.Send(wire.NewError(env.Id, wire.ErrInvalidRequest, "unknown request"))
 	}
@@ -339,6 +382,17 @@ func (srv *Server) handleMonitor(sess *Session, id uint64, req *pb.MonitorReques
 		return
 	}
 
+	// Check minimum interval
+	srv.runtimeMu.RLock()
+	minInterval := srv.minIntervalMs
+	srv.runtimeMu.RUnlock()
+
+	if req.IntervalMs > 0 && req.IntervalMs < minInterval {
+		sess.Send(wire.NewError(id, wire.ErrInvalidRequest,
+			fmt.Sprintf("interval_ms must be >= %d", minInterval)))
+		return
+	}
+
 	port := uint16(req.Port)
 	if port == 0 {
 		port = 161
@@ -350,7 +404,7 @@ func (srv *Server) handleMonitor(sess *Session, id uint64, req *pb.MonitorReques
 	// Check existing
 	if existingID, ok := srv.targetIndex[key]; ok {
 		t := srv.targets[existingID]
-		t.AddOwner(sess.ID) // Session wird Owner (hält Target am Leben)
+		t.AddOwner(sess.ID)
 		srv.mu.Unlock()
 
 		sess.Send(&pb.Envelope{
@@ -363,16 +417,23 @@ func (srv *Server) handleMonitor(sess *Session, id uint64, req *pb.MonitorReques
 		return
 	}
 
+	// Apply defaults
+	srv.runtimeMu.RLock()
+	if req.BufferSize == 0 {
+		req.BufferSize = srv.defaultBufferSize
+	}
+	srv.runtimeMu.RUnlock()
+
 	// Create new
 	targetID := srv.genID()
 	t := NewTarget(targetID, req, srv.cfg.SNMP.BufferSize)
-	t.AddOwner(sess.ID) // Session wird Owner
+	t.AddOwner(sess.ID)
 
 	srv.targets[targetID] = t
 	srv.targetIndex[key] = targetID
 	srv.mu.Unlock()
 
-	// Target zum Scheduler hinzufügen (außerhalb des Locks!)
+	// Add to scheduler (outside lock)
 	srv.poller.AddTarget(targetID, t.IntervalMs)
 
 	sess.Send(&pb.Envelope{
@@ -386,7 +447,7 @@ func (srv *Server) handleMonitor(sess *Session, id uint64, req *pb.MonitorReques
 
 func validateSNMPConfig(cfg *pb.SNMPConfig) error {
 	if cfg == nil {
-		return nil // Will use defaults
+		return nil
 	}
 
 	if v3 := cfg.GetV3(); v3 != nil {
@@ -396,7 +457,7 @@ func validateSNMPConfig(cfg *pb.SNMPConfig) error {
 
 		switch v3.SecurityLevel {
 		case pb.SecurityLevel_SECURITY_LEVEL_NO_AUTH_NO_PRIV:
-			// No credentials required
+			// OK
 		case pb.SecurityLevel_SECURITY_LEVEL_AUTH_NO_PRIV:
 			if v3.AuthProtocol == pb.AuthProtocol_AUTH_PROTOCOL_UNSPECIFIED {
 				return fmt.Errorf("authNoPriv requires auth_protocol")
@@ -436,9 +497,8 @@ func (srv *Server) handleUnmonitor(sess *Session, id uint64, req *pb.UnmonitorRe
 	}
 
 	t.RemoveOwner(sess.ID)
-	sess.Unsubscribe(req.TargetId) // Auch Live-Updates stoppen
+	sess.Unsubscribe(req.TargetId)
 
-	// Remove target if no owners
 	shouldRemove := !t.HasOwners()
 	if shouldRemove {
 		delete(srv.targets, req.TargetId)
@@ -447,7 +507,6 @@ func (srv *Server) handleUnmonitor(sess *Session, id uint64, req *pb.UnmonitorRe
 	}
 	srv.mu.Unlock()
 
-	// Target vom Scheduler entfernen (außerhalb des Locks!)
 	if shouldRemove {
 		srv.poller.RemoveTarget(req.TargetId)
 	}
@@ -542,8 +601,6 @@ func (srv *Server) handleGetHistory(sess *Session, id uint64, req *pb.GetHistory
 	})
 }
 
-// handleSubscribe - Session will Live-Updates für die angegebenen Targets
-// WICHTIG: Dies fügt NICHT zu t.Owners hinzu! Nur sess.subscriptions wird aktualisiert.
 func (srv *Server) handleSubscribe(sess *Session, id uint64, req *pb.SubscribeRequest) {
 	srv.mu.RLock()
 	defer srv.mu.RUnlock()
@@ -554,7 +611,7 @@ func (srv *Server) handleSubscribe(sess *Session, id uint64, req *pb.SubscribeRe
 		if !ok {
 			continue
 		}
-		sess.Subscribe(targetID) // Nur Session-Seite aktualisieren
+		sess.Subscribe(targetID)
 		subscribed = append(subscribed, targetID)
 	}
 
@@ -566,17 +623,14 @@ func (srv *Server) handleSubscribe(sess *Session, id uint64, req *pb.SubscribeRe
 	})
 }
 
-// handleUnsubscribe - Session will keine Live-Updates mehr für die angegebenen Targets
-// WICHTIG: Dies entfernt NICHT aus t.Owners! Nur sess.subscriptions wird aktualisiert.
 func (srv *Server) handleUnsubscribe(sess *Session, id uint64, req *pb.UnsubscribeRequest) {
-	// Kein Lock auf srv.mu nötig, da wir nur sess.subscriptions ändern
 	targetIDs := req.TargetIds
 	if len(targetIDs) == 0 {
 		targetIDs = sess.GetSubscriptions()
 	}
 
 	for _, targetID := range targetIDs {
-		sess.Unsubscribe(targetID) // Nur Session-Seite aktualisieren
+		sess.Unsubscribe(targetID)
 	}
 
 	sess.Send(&pb.Envelope{
@@ -586,6 +640,249 @@ func (srv *Server) handleUnsubscribe(sess *Session, id uint64, req *pb.Unsubscri
 		},
 	})
 }
+
+// ============================================================================
+// NEW: Status Handlers
+// ============================================================================
+
+func (srv *Server) handleGetServerStatus(sess *Session, id uint64) {
+	srv.mu.RLock()
+
+	var sessActive, sessLost int
+	for _, s := range srv.sessions {
+		if s.IsLost() {
+			sessLost++
+		} else {
+			sessActive++
+		}
+	}
+
+	var targetsPolling, targetsUnreachable int
+	for _, t := range srv.targets {
+		t.mu.RLock()
+		switch t.State {
+		case "polling":
+			targetsPolling++
+		case "unreachable":
+			targetsUnreachable++
+		}
+		t.mu.RUnlock()
+	}
+
+	targetsTotal := len(srv.targets)
+	srv.mu.RUnlock()
+
+	// Get poller stats
+	heapSize, queueUsed := srv.poller.Stats()
+
+	resp := &pb.GetServerStatusResponse{
+		Version:             Version,
+		UptimeMs:            time.Since(srv.startedAt).Milliseconds(),
+		StartedAtMs:         srv.startedAt.UnixMilli(),
+		SessionsActive:      int32(sessActive),
+		SessionsLost:        int32(sessLost),
+		TargetsTotal:        int32(targetsTotal),
+		TargetsPolling:      int32(targetsPolling),
+		TargetsUnreachable:  int32(targetsUnreachable),
+		PollerWorkers:       int32(srv.cfg.Poller.Workers),
+		PollerQueueUsed:     int32(queueUsed),
+		PollerQueueCapacity: int32(srv.cfg.Poller.QueueSize),
+		PollerHeapSize:      int32(heapSize),
+		PollsTotal:          srv.pollsTotal.Load(),
+		PollsSuccess:        srv.pollsOK.Load(),
+		PollsFailed:         srv.pollsFailed.Load(),
+	}
+
+	sess.Send(&pb.Envelope{
+		Id: id,
+		Payload: &pb.Envelope_GetServerStatusResp{
+			GetServerStatusResp: resp,
+		},
+	})
+}
+
+func (srv *Server) handleGetSessionInfo(sess *Session, id uint64) {
+	srv.mu.RLock()
+	var owned []string
+	for targetID, t := range srv.targets {
+		t.mu.RLock()
+		if t.Owners[sess.ID] {
+			owned = append(owned, targetID)
+		}
+		t.mu.RUnlock()
+	}
+	srv.mu.RUnlock()
+
+	subscribed := sess.GetSubscriptions()
+
+	sess.mu.RLock()
+	createdAt := sess.CreatedAt.UnixMilli()
+	sess.mu.RUnlock()
+
+	resp := &pb.GetSessionInfoResponse{
+		SessionId:         sess.ID,
+		TokenId:           sess.TokenID,
+		CreatedAtMs:       createdAt,
+		ConnectedAtMs:     createdAt,
+		OwnedTargets:      owned,
+		SubscribedTargets: subscribed,
+	}
+
+	sess.Send(&pb.Envelope{
+		Id: id,
+		Payload: &pb.Envelope_GetSessionInfoResp{
+			GetSessionInfoResp: resp,
+		},
+	})
+}
+
+func (srv *Server) handleUpdateTarget(sess *Session, id uint64, req *pb.UpdateTargetRequest) {
+	srv.mu.Lock()
+	t, ok := srv.targets[req.TargetId]
+	if !ok {
+		srv.mu.Unlock()
+		sess.Send(wire.NewError(id, wire.ErrTargetNotFound, "target not found"))
+		return
+	}
+
+	// Check ownership
+	t.mu.Lock()
+	if !t.Owners[sess.ID] {
+		t.mu.Unlock()
+		srv.mu.Unlock()
+		sess.Send(wire.NewError(id, wire.ErrInternal, "not owner of target"))
+		return
+	}
+
+	var changed bool
+
+	// Update interval
+	if req.IntervalMs != nil {
+		newInterval := *req.IntervalMs
+
+		srv.runtimeMu.RLock()
+		minInterval := srv.minIntervalMs
+		srv.runtimeMu.RUnlock()
+
+		if newInterval < minInterval {
+			t.mu.Unlock()
+			srv.mu.Unlock()
+			sess.Send(wire.NewError(id, wire.ErrInvalidRequest,
+				fmt.Sprintf("interval_ms must be >= %d", minInterval)))
+			return
+		}
+
+		t.IntervalMs = newInterval
+		changed = true
+	}
+
+	// Update timeout
+	if req.TimeoutMs != nil {
+		if t.SNMP == nil {
+			t.SNMP = &pb.SNMPConfig{}
+		}
+		t.SNMP.TimeoutMs = *req.TimeoutMs
+		changed = true
+	}
+
+	// Update retries
+	if req.Retries != nil {
+		if t.SNMP == nil {
+			t.SNMP = &pb.SNMPConfig{}
+		}
+		t.SNMP.Retries = *req.Retries
+		changed = true
+	}
+
+	targetProto := t.toProtoLocked()
+	t.mu.Unlock()
+	srv.mu.Unlock()
+
+	// Update scheduler if interval changed
+	if req.IntervalMs != nil {
+		srv.poller.UpdateInterval(req.TargetId, *req.IntervalMs)
+	}
+
+	msg := "no changes"
+	if changed {
+		msg = "updated"
+	}
+
+	sess.Send(&pb.Envelope{
+		Id: id,
+		Payload: &pb.Envelope_UpdateTargetResp{
+			UpdateTargetResp: &pb.UpdateTargetResponse{
+				Ok:      true,
+				Target:  targetProto,
+				Message: msg,
+			},
+		},
+	})
+}
+
+func (srv *Server) handleGetConfig(sess *Session, id uint64) {
+	srv.runtimeMu.RLock()
+	cfg := &pb.RuntimeConfig{
+		DefaultTimeoutMs:   srv.defaultTimeoutMs,
+		DefaultRetries:     srv.defaultRetries,
+		DefaultBufferSize:  srv.defaultBufferSize,
+		MinIntervalMs:      srv.minIntervalMs,
+		PollerWorkers:      int32(srv.cfg.Poller.Workers),
+		PollerQueueSize:    int32(srv.cfg.Poller.QueueSize),
+		ReconnectWindowSec: uint32(srv.cfg.ReconnectWindow().Seconds()),
+	}
+	srv.runtimeMu.RUnlock()
+
+	sess.Send(&pb.Envelope{
+		Id: id,
+		Payload: &pb.Envelope_GetConfigResp{
+			GetConfigResp: &pb.GetConfigResponse{Config: cfg},
+		},
+	})
+}
+
+func (srv *Server) handleSetConfig(sess *Session, id uint64, req *pb.SetConfigRequest) {
+	srv.runtimeMu.Lock()
+
+	if req.DefaultTimeoutMs != nil {
+		srv.defaultTimeoutMs = *req.DefaultTimeoutMs
+	}
+	if req.DefaultRetries != nil {
+		srv.defaultRetries = *req.DefaultRetries
+	}
+	if req.DefaultBufferSize != nil {
+		srv.defaultBufferSize = *req.DefaultBufferSize
+	}
+	if req.MinIntervalMs != nil {
+		srv.minIntervalMs = *req.MinIntervalMs
+	}
+
+	cfg := &pb.RuntimeConfig{
+		DefaultTimeoutMs:   srv.defaultTimeoutMs,
+		DefaultRetries:     srv.defaultRetries,
+		DefaultBufferSize:  srv.defaultBufferSize,
+		MinIntervalMs:      srv.minIntervalMs,
+		PollerWorkers:      int32(srv.cfg.Poller.Workers),
+		PollerQueueSize:    int32(srv.cfg.Poller.QueueSize),
+		ReconnectWindowSec: uint32(srv.cfg.ReconnectWindow().Seconds()),
+	}
+	srv.runtimeMu.Unlock()
+
+	sess.Send(&pb.Envelope{
+		Id: id,
+		Payload: &pb.Envelope_SetConfigResp{
+			SetConfigResp: &pb.SetConfigResponse{
+				Ok:      true,
+				Config:  cfg,
+				Message: "config updated",
+			},
+		},
+	})
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
 
 func (srv *Server) validateToken(token string) (string, bool) {
 	for _, t := range srv.cfg.Auth.Tokens {
@@ -637,7 +934,6 @@ func (srv *Server) cleanupSessions() {
 
 	for id, sess := range srv.sessions {
 		if sess.IsLost() && sess.LostDuration() > window {
-			// Session aus Owner-Listen entfernen
 			for _, t := range srv.targets {
 				t.RemoveOwner(id)
 			}
@@ -661,7 +957,6 @@ func (srv *Server) cleanupTargets() {
 	}
 	srv.mu.Unlock()
 
-	// Targets vom Scheduler entfernen (außerhalb des Locks!)
 	for _, id := range toRemove {
 		srv.poller.RemoveTarget(id)
 	}

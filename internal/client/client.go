@@ -283,3 +283,72 @@ func (c *Client) Unsubscribe(targetIDs []string) error {
 	})
 	return err
 }
+
+// ============================================================================
+// NEW: Status, Session, Update, Config
+// ============================================================================
+
+// GetServerStatus returns server status information.
+func (c *Client) GetServerStatus() (*pb.GetServerStatusResponse, error) {
+	resp, err := c.request(&pb.Envelope{
+		Payload: &pb.Envelope_GetServerStatus{
+			GetServerStatus: &pb.GetServerStatusRequest{},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetGetServerStatusResp(), nil
+}
+
+// GetSessionInfo returns information about the current session.
+func (c *Client) GetSessionInfo() (*pb.GetSessionInfoResponse, error) {
+	resp, err := c.request(&pb.Envelope{
+		Payload: &pb.Envelope_GetSessionInfo{
+			GetSessionInfo: &pb.GetSessionInfoRequest{},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetGetSessionInfoResp(), nil
+}
+
+// UpdateTarget updates target settings (interval, timeout, retries).
+func (c *Client) UpdateTarget(req *pb.UpdateTargetRequest) (*pb.UpdateTargetResponse, error) {
+	resp, err := c.request(&pb.Envelope{
+		Payload: &pb.Envelope_UpdateTarget{
+			UpdateTarget: req,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetUpdateTargetResp(), nil
+}
+
+// GetConfig returns the current runtime configuration.
+func (c *Client) GetConfig() (*pb.RuntimeConfig, error) {
+	resp, err := c.request(&pb.Envelope{
+		Payload: &pb.Envelope_GetConfig{
+			GetConfig: &pb.GetConfigRequest{},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetGetConfigResp().GetConfig(), nil
+}
+
+// SetConfig updates the runtime configuration.
+func (c *Client) SetConfig(req *pb.SetConfigRequest) (*pb.SetConfigResponse, error) {
+	resp, err := c.request(&pb.Envelope{
+		Payload: &pb.Envelope_SetConfig{
+			SetConfig: req,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetSetConfigResp(), nil
+}

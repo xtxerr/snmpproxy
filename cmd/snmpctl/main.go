@@ -93,6 +93,13 @@ func printHelp() {
 	fmt.Println("  history <target-id> [count]")
 	fmt.Println("  subscribe <target-id>...")
 	fmt.Println("  unsubscribe [target-id]...")
+	fmt.Println()
+	fmt.Println("  update <target-id> [-i interval] [-t timeout] [-r retries]")
+	fmt.Println("  status                      - Server status")
+	fmt.Println("  session                     - Session info")
+	fmt.Println("  config                      - Show runtime config")
+	fmt.Println("  config set <key> <value>    - Change config")
+	fmt.Println()
 	fmt.Println("  help")
 	fmt.Println("  quit")
 	fmt.Println()
@@ -133,6 +140,15 @@ func interactive() {
 			cmdSubscribe(args)
 		case "unsubscribe", "unsub":
 			cmdUnsubscribe(args)
+		// NEW commands
+		case "status":
+			cmdStatus()
+		case "session":
+			cmdSession()
+		case "update":
+			cmdUpdate(args)
+		case "config":
+			cmdConfig(args)
 		case "help", "?":
 			printHelp()
 		case "quit", "exit", "q":
@@ -469,6 +485,14 @@ func cmdInfo(args []string) {
 	if t.LastError != "" {
 		fmt.Printf("Last Error:  %s\n", t.LastError)
 	}
+	// Extended stats (if available)
+	if t.CreatedAtMs > 0 {
+		fmt.Printf("Created:     %s\n", time.UnixMilli(t.CreatedAtMs).Format(time.RFC3339))
+	}
+	if t.PollsTotal > 0 {
+		fmt.Printf("Polls:       %d total, %d ok, %d failed\n", t.PollsTotal, t.PollsSuccess, t.PollsFailed)
+		fmt.Printf("Poll Time:   avg %dms, min %dms, max %dms\n", t.AvgPollMs, t.MinPollMs, t.MaxPollMs)
+	}
 }
 
 func cmdHistory(args []string) {
@@ -541,9 +565,220 @@ func cmdUnsubscribe(args []string) {
 	}
 }
 
+// ============================================================================
+// NEW: Status, Session, Update, Config commands
+// ============================================================================
+
+func cmdStatus() {
+	status, err := cli.GetServerStatus()
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	uptime := time.Duration(status.UptimeMs) * time.Millisecond
+
+	fmt.Println("=== Server Status ===")
+	fmt.Printf("Version:       %s\n", status.Version)
+	fmt.Printf("Uptime:        %s\n", formatDuration(uptime))
+	fmt.Printf("Started:       %s\n", time.UnixMilli(status.StartedAtMs).Format("2006-01-02 15:04:05"))
+	fmt.Println()
+	fmt.Println("Sessions:")
+	fmt.Printf("  Active:      %d\n", status.SessionsActive)
+	fmt.Printf("  Lost:        %d\n", status.SessionsLost)
+	fmt.Println()
+	fmt.Println("Targets:")
+	fmt.Printf("  Total:       %d\n", status.TargetsTotal)
+	fmt.Printf("  Polling:     %d\n", status.TargetsPolling)
+	fmt.Printf("  Unreachable: %d\n", status.TargetsUnreachable)
+	fmt.Println()
+	fmt.Println("Poller:")
+	fmt.Printf("  Workers:     %d\n", status.PollerWorkers)
+	fmt.Printf("  Queue:       %d / %d\n", status.PollerQueueUsed, status.PollerQueueCapacity)
+	fmt.Printf("  Heap Size:   %d\n", status.PollerHeapSize)
+	fmt.Println()
+	fmt.Println("Statistics:")
+	fmt.Printf("  Total Polls: %d\n", status.PollsTotal)
+	fmt.Printf("  Success:     %d\n", status.PollsSuccess)
+	fmt.Printf("  Failed:      %d\n", status.PollsFailed)
+	if status.PollsTotal > 0 {
+		successRate := float64(status.PollsSuccess) / float64(status.PollsTotal) * 100
+		fmt.Printf("  Success Rate: %.1f%%\n", successRate)
+	}
+}
+
+func cmdSession() {
+	sess, err := cli.GetSessionInfo()
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	fmt.Println("=== Session Info ===")
+	fmt.Printf("Session ID:    %s\n", sess.SessionId)
+	fmt.Printf("Token ID:      %s\n", sess.TokenId)
+	fmt.Printf("Created:       %s\n", time.UnixMilli(sess.CreatedAtMs).Format("2006-01-02 15:04:05"))
+	fmt.Println()
+	fmt.Printf("Owned Targets (%d):\n", len(sess.OwnedTargets))
+	for _, id := range sess.OwnedTargets {
+		name := names[id]
+		if name != "" {
+			fmt.Printf("  - %s (%s)\n", id, name)
+		} else {
+			fmt.Printf("  - %s\n", id)
+		}
+	}
+	fmt.Println()
+	fmt.Printf("Subscribed (%d):\n", len(sess.SubscribedTargets))
+	for _, id := range sess.SubscribedTargets {
+		name := names[id]
+		if name != "" {
+			fmt.Printf("  - %s (%s)\n", id, name)
+		} else {
+			fmt.Printf("  - %s\n", id)
+		}
+	}
+}
+
+func cmdUpdate(args []string) {
+	if len(args) < 1 {
+		fmt.Println("Usage: update <target-id> [-i interval] [-t timeout] [-r retries]")
+		return
+	}
+
+	targetID := args[0]
+	req := &pb.UpdateTargetRequest{TargetId: targetID}
+
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "-i", "--interval":
+			if i+1 < len(args) {
+				i++
+				if v, err := strconv.ParseUint(args[i], 10, 32); err == nil {
+					val := uint32(v)
+					req.IntervalMs = &val
+				}
+			}
+		case "-t", "--timeout":
+			if i+1 < len(args) {
+				i++
+				if v, err := strconv.ParseUint(args[i], 10, 32); err == nil {
+					val := uint32(v)
+					req.TimeoutMs = &val
+				}
+			}
+		case "-r", "--retries":
+			if i+1 < len(args) {
+				i++
+				if v, err := strconv.ParseUint(args[i], 10, 32); err == nil {
+					val := uint32(v)
+					req.Retries = &val
+				}
+			}
+		}
+	}
+
+	resp, err := cli.UpdateTarget(req)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	if resp.Ok {
+		fmt.Printf("Updated: %s\n", resp.Message)
+		if resp.Target != nil {
+			fmt.Printf("  Interval: %d ms\n", resp.Target.IntervalMs)
+		}
+	} else {
+		fmt.Printf("Failed: %s\n", resp.Message)
+	}
+}
+
+func cmdConfig(args []string) {
+	// config set <key> <value>
+	if len(args) >= 3 && args[0] == "set" {
+		cmdConfigSet(args[1], args[2])
+		return
+	}
+
+	// config (show)
+	cfg, err := cli.GetConfig()
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	fmt.Println("=== Runtime Config ===")
+	fmt.Println("Changeable:")
+	fmt.Printf("  default_timeout_ms:  %d\n", cfg.DefaultTimeoutMs)
+	fmt.Printf("  default_retries:     %d\n", cfg.DefaultRetries)
+	fmt.Printf("  default_buffer_size: %d\n", cfg.DefaultBufferSize)
+	fmt.Printf("  min_interval_ms:     %d\n", cfg.MinIntervalMs)
+	fmt.Println()
+	fmt.Println("Read-only:")
+	fmt.Printf("  poller_workers:      %d\n", cfg.PollerWorkers)
+	fmt.Printf("  poller_queue_size:   %d\n", cfg.PollerQueueSize)
+	fmt.Printf("  reconnect_window:    %d sec\n", cfg.ReconnectWindowSec)
+}
+
+func cmdConfigSet(key, value string) {
+	v, err := strconv.ParseUint(value, 10, 32)
+	if err != nil {
+		fmt.Printf("Invalid value: %s\n", value)
+		return
+	}
+	val := uint32(v)
+
+	req := &pb.SetConfigRequest{}
+	switch key {
+	case "timeout", "default_timeout_ms":
+		req.DefaultTimeoutMs = &val
+	case "retries", "default_retries":
+		req.DefaultRetries = &val
+	case "buffer", "default_buffer_size":
+		req.DefaultBufferSize = &val
+	case "min-interval", "min_interval_ms":
+		req.MinIntervalMs = &val
+	default:
+		fmt.Printf("Unknown config key: %s\n", key)
+		fmt.Println("Valid keys: timeout, retries, buffer, min-interval")
+		return
+	}
+
+	resp, err := cli.SetConfig(req)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	if resp.Ok {
+		fmt.Printf("Config updated: %s = %d\n", key, val)
+	} else {
+		fmt.Printf("Failed: %s\n", resp.Message)
+	}
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
 	return s[:n-3] + "..."
+}
+
+func formatDuration(d time.Duration) string {
+	days := int(d.Hours() / 24)
+	hours := int(d.Hours()) % 24
+	mins := int(d.Minutes()) % 60
+
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, mins)
+	}
+	return fmt.Sprintf("%dm", mins)
 }

@@ -22,14 +22,23 @@ type Target struct {
 	IntervalMs uint32
 	SNMP       *pb.SNMPConfig
 
-	// Runtime
+	// Runtime state
 	State      string // "polling", "unreachable", "error"
 	LastPollMs int64
 	LastError  string
 	ErrCount   int
-	Owners     map[string]bool // Sessions die dieses Target "besitzen" (via monitor)
+	Owners     map[string]bool
 
-	// Buffer
+	// Statistics
+	CreatedAt   time.Time
+	PollsTotal  int64
+	PollsOK     int64
+	PollsFailed int64
+	PollMsTotal int64 // For calculating average
+	PollMsMin   int32
+	PollMsMax   int32
+
+	// Ring buffer
 	buffer   []Sample
 	bufSize  int
 	writeIdx int
@@ -70,17 +79,19 @@ func NewTarget(id string, req *pb.MonitorRequest, defaultBufSize uint32) *Target
 		SNMP:       req.Snmp,
 		State:      "polling",
 		Owners:     make(map[string]bool),
+		CreatedAt:  time.Now(),
+		PollMsMin:  -1, // -1 = not set
 		buffer:     make([]Sample, bufSize),
 		bufSize:    bufSize,
 	}
 }
 
-// Key returns the deduplication key (host:port/oid).
+// Key returns the deduplication key.
 func (t *Target) Key() string {
 	return fmt.Sprintf("%s:%d/%s", t.Host, t.Port, t.OID)
 }
 
-// AddOwner adds a session as owner (keeps target alive).
+// AddOwner adds a session as owner.
 func (t *Target) AddOwner(sessionID string) {
 	t.mu.Lock()
 	t.Owners[sessionID] = true
@@ -119,28 +130,43 @@ func (t *Target) OwnerCount() int {
 	return len(t.Owners)
 }
 
-// WriteSample adds a sample to the ring buffer.
+// WriteSample adds a sample to the ring buffer and updates stats.
 func (t *Target) WriteSample(s Sample) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	// Write to buffer
 	t.buffer[t.writeIdx] = s
 	t.writeIdx = (t.writeIdx + 1) % t.bufSize
 	if t.count < t.bufSize {
 		t.count++
 	}
 
+	// Update state
 	t.LastPollMs = s.TimestampMs
+	t.PollsTotal++
+
 	if s.Valid {
 		t.State = "polling"
 		t.LastError = ""
 		t.ErrCount = 0
+		t.PollsOK++
 	} else {
 		t.LastError = s.Error
 		t.ErrCount++
+		t.PollsFailed++
 		if t.ErrCount >= 3 {
 			t.State = "unreachable"
 		}
+	}
+
+	// Update timing stats
+	t.PollMsTotal += int64(s.PollMs)
+	if t.PollMsMin < 0 || s.PollMs < t.PollMsMin {
+		t.PollMsMin = s.PollMs
+	}
+	if s.PollMs > t.PollMsMax {
+		t.PollMsMax = s.PollMs
 	}
 }
 
@@ -164,10 +190,24 @@ func (t *Target) ReadLastN(n int) []Sample {
 	return result
 }
 
-// ToProto converts to protobuf Target.
+// ToProto converts to protobuf Target (acquires lock).
 func (t *Target) ToProto() *pb.Target {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
+	return t.toProtoLocked()
+}
+
+// toProtoLocked converts to protobuf Target (caller must hold lock).
+func (t *Target) toProtoLocked() *pb.Target {
+	var avgPollMs int32
+	if t.PollsTotal > 0 {
+		avgPollMs = int32(t.PollMsTotal / t.PollsTotal)
+	}
+
+	minPollMs := t.PollMsMin
+	if minPollMs < 0 {
+		minPollMs = 0
+	}
 
 	return &pb.Target{
 		Id:              t.ID,
@@ -181,6 +221,14 @@ func (t *Target) ToProto() *pb.Target {
 		LastError:       t.LastError,
 		Subscribers:     int32(len(t.Owners)),
 		SamplesBuffered: int32(t.count),
+		// Extended stats
+		CreatedAtMs:  t.CreatedAt.UnixMilli(),
+		PollsTotal:   t.PollsTotal,
+		PollsSuccess: t.PollsOK,
+		PollsFailed:  t.PollsFailed,
+		AvgPollMs:    avgPollMs,
+		MinPollMs:    minPollMs,
+		MaxPollMs:    t.PollMsMax,
 	}
 }
 
@@ -191,44 +239,28 @@ func (t *Target) ToProto() *pb.Target {
 // PollItem represents a target in the scheduler heap.
 type PollItem struct {
 	TargetID   string
-	NextPollMs int64 // Wann der nächste Poll fällig ist
-	IntervalMs int64 // Poll-Interval
-	Polling    bool  // true wenn Poll gerade läuft
-	index      int   // Index im Heap (für heap.Fix/Remove)
+	NextPollMs int64
+	IntervalMs int64
+	Polling    bool
+	index      int
 }
 
-// PollHeap implements heap.Interface - Min-Heap sortiert nach NextPollMs.
+// PollHeap implements heap.Interface.
 type PollHeap []*PollItem
 
-func (h PollHeap) Len() int { return len(h) }
-
-func (h PollHeap) Less(i, j int) bool {
-	return h[i].NextPollMs < h[j].NextPollMs
-}
-
-func (h PollHeap) Swap(i, j int) {
-	h[i], h[j] = h[j], h[i]
-	h[i].index = i
-	h[j].index = j
-}
-
-func (h *PollHeap) Push(x any) {
-	item := x.(*PollItem)
-	item.index = len(*h)
-	*h = append(*h, item)
-}
-
+func (h PollHeap) Len() int            { return len(h) }
+func (h PollHeap) Less(i, j int) bool  { return h[i].NextPollMs < h[j].NextPollMs }
+func (h PollHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i]; h[i].index = i; h[j].index = j }
+func (h *PollHeap) Push(x any)         { item := x.(*PollItem); item.index = len(*h); *h = append(*h, item) }
 func (h *PollHeap) Pop() any {
 	old := *h
 	n := len(old)
 	item := old[n-1]
-	old[n-1] = nil // Avoid memory leak
+	old[n-1] = nil
 	item.index = -1
-	*h = old[0 : n-1]
+	*h = old[:n-1]
 	return item
 }
-
-// Peek returns the next item without removing it.
 func (h PollHeap) Peek() *PollItem {
 	if len(h) == 0 {
 		return nil
@@ -240,12 +272,10 @@ func (h PollHeap) Peek() *PollItem {
 // Poll Job & Result
 // ============================================================================
 
-// PollJob is a job for the worker pool.
 type PollJob struct {
 	TargetID string
 }
 
-// PollResult is the result of a poll.
 type PollResult struct {
 	TargetID    string
 	TimestampMs int64
@@ -260,7 +290,6 @@ type PollResult struct {
 // Poller
 // ============================================================================
 
-// Poller manages SNMP polling with a heap-based scheduler and worker pool.
 type Poller struct {
 	server   *Server
 	jobs     chan PollJob
@@ -268,14 +297,12 @@ type Poller struct {
 	shutdown chan struct{}
 	workers  int
 
-	// Heap-basierter Scheduler
 	mu      sync.Mutex
 	heap    PollHeap
-	heapIdx map[string]*PollItem // targetID -> PollItem für O(1) Lookup
-	wakeup  chan struct{}        // Signal wenn neues Target hinzugefügt
+	heapIdx map[string]*PollItem
+	wakeup  chan struct{}
 }
 
-// NewPoller creates a new poller with heap-based scheduling.
 func NewPoller(srv *Server, workers, queueSize int) *Poller {
 	p := &Poller{
 		server:   srv,
@@ -291,38 +318,36 @@ func NewPoller(srv *Server, workers, queueSize int) *Poller {
 	return p
 }
 
-// Start starts the poller workers, scheduler, and dispatcher.
 func (p *Poller) Start() {
-	// Worker-Pool starten
 	for i := 0; i < p.workers; i++ {
 		go p.worker()
 	}
-	// Heap-basierter Scheduler
 	go p.scheduler()
-	// Ergebnis-Dispatcher
 	go p.dispatcher()
 }
 
-// Stop stops the poller.
 func (p *Poller) Stop() {
 	close(p.shutdown)
 }
 
-// AddTarget fügt ein Target zum Scheduler hinzu.
-// Verwendet Jitter um Thundering-Herd zu vermeiden.
+// Stats returns heap size and queue usage.
+func (p *Poller) Stats() (heapSize, queueUsed int) {
+	p.mu.Lock()
+	heapSize = p.heap.Len()
+	p.mu.Unlock()
+	queueUsed = len(p.jobs)
+	return
+}
+
 func (p *Poller) AddTarget(targetID string, intervalMs uint32) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Bereits vorhanden?
 	if _, exists := p.heapIdx[targetID]; exists {
 		return
 	}
 
 	interval := int64(intervalMs)
-
-	// Jitter: Verteile initialen Poll zufällig über das Interval
-	// Damit nicht alle Targets gleichzeitig pollen
 	jitter := rand.Int63n(interval)
 
 	item := &PollItem{
@@ -334,12 +359,9 @@ func (p *Poller) AddTarget(targetID string, intervalMs uint32) {
 
 	heap.Push(&p.heap, item)
 	p.heapIdx[targetID] = item
-
-	// Scheduler aufwecken falls er schläft
 	p.signalWakeup()
 }
 
-// RemoveTarget entfernt ein Target vom Scheduler.
 func (p *Poller) RemoveTarget(targetID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -349,14 +371,12 @@ func (p *Poller) RemoveTarget(targetID string) {
 		return
 	}
 
-	// Nur aus Heap entfernen wenn noch drin (index >= 0)
 	if item.index >= 0 {
 		heap.Remove(&p.heap, item.index)
 	}
 	delete(p.heapIdx, targetID)
 }
 
-// UpdateInterval ändert das Poll-Interval eines Targets.
 func (p *Poller) UpdateInterval(targetID string, newIntervalMs uint32) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -367,32 +387,24 @@ func (p *Poller) UpdateInterval(targetID string, newIntervalMs uint32) {
 	}
 
 	item.IntervalMs = int64(newIntervalMs)
-	// NextPollMs bleibt gleich - neues Interval gilt ab nächstem Poll
 }
 
-// signalWakeup sendet ein nicht-blockierendes Signal an den Scheduler.
 func (p *Poller) signalWakeup() {
 	select {
 	case p.wakeup <- struct{}{}:
 	default:
-		// Channel ist bereits voll, Scheduler wird sowieso aufwachen
 	}
 }
 
-// scheduler ist der Heap-basierte Scheduler.
-// Schläft bis zum nächsten fälligen Poll statt busy-waiting.
 func (p *Poller) scheduler() {
-	timer := time.NewTimer(time.Hour) // Initial lang, wird sofort überschrieben
+	timer := time.NewTimer(time.Hour)
 	defer timer.Stop()
 
 	for {
 		p.mu.Lock()
-
-		// Nächstes fälliges Target finden
 		next := p.heap.Peek()
 
 		if next == nil {
-			// Keine Targets - warte auf Signal oder Shutdown
 			p.mu.Unlock()
 			select {
 			case <-p.wakeup:
@@ -407,25 +419,20 @@ func (p *Poller) scheduler() {
 		p.mu.Unlock()
 
 		if sleepMs > 0 {
-			// Schlafe bis zum nächsten Poll
 			timer.Reset(time.Duration(sleepMs) * time.Millisecond)
 			select {
 			case <-timer.C:
-				// Zeit für Poll
 			case <-p.wakeup:
-				// Neues Target oder Änderung - neu prüfen
 				continue
 			case <-p.shutdown:
 				return
 			}
 		}
 
-		// Alle fälligen Targets verarbeiten
 		p.processDueTargets()
 	}
 }
 
-// processDueTargets verarbeitet alle Targets deren NextPollMs <= now ist.
 func (p *Poller) processDueTargets() {
 	now := time.Now().UnixMilli()
 
@@ -435,29 +442,23 @@ func (p *Poller) processDueTargets() {
 	for p.heap.Len() > 0 {
 		next := p.heap.Peek()
 
-		// Nicht fällig? Fertig.
 		if next.NextPollMs > now {
 			break
 		}
 
-		// Pop aus dem Heap
 		item := heap.Pop(&p.heap).(*PollItem)
 
-		// Bereits am Pollen? Überspringe (sollte nicht passieren)
 		if item.Polling {
 			continue
 		}
 
-		// Als "polling" markieren
 		item.Polling = true
 
-		// Job erstellen
 		select {
 		case p.jobs <- PollJob{TargetID: item.TargetID}:
-			// Erfolgreich eingereicht
-			// Target ist jetzt aus dem Heap, wird nach Completion wieder eingefügt
+			// Success
 		default:
-			// Queue voll - sofort wieder einreihen mit Retry-Delay
+			// Queue full - retry
 			item.Polling = false
 			item.NextPollMs = now + 10
 			heap.Push(&p.heap, item)
@@ -465,15 +466,12 @@ func (p *Poller) processDueTargets() {
 	}
 }
 
-// MarkPollComplete wird aufgerufen wenn ein Poll abgeschlossen ist.
-// Setzt NextPollMs und fügt das Target wieder in den Heap ein.
 func (p *Poller) MarkPollComplete(targetID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	item, ok := p.heapIdx[targetID]
 	if !ok {
-		// Target wurde zwischenzeitlich entfernt
 		return
 	}
 
@@ -481,24 +479,17 @@ func (p *Poller) MarkPollComplete(targetID string) {
 	item.NextPollMs = now + item.IntervalMs
 	item.Polling = false
 
-	// Wieder in den Heap einfügen
 	heap.Push(&p.heap, item)
-
-	// Scheduler aufwecken
 	p.signalWakeup()
 }
 
-// worker verarbeitet Poll-Jobs aus der Queue.
 func (p *Poller) worker() {
 	for {
 		select {
 		case job := <-p.jobs:
 			result := p.poll(job.TargetID)
-
-			// Poll abgeschlossen - Scheduler informieren
 			p.MarkPollComplete(job.TargetID)
 
-			// Ergebnis an Dispatcher
 			select {
 			case p.results <- result:
 			case <-p.shutdown:
@@ -510,7 +501,6 @@ func (p *Poller) worker() {
 	}
 }
 
-// poll führt den eigentlichen SNMP-Poll durch.
 func (p *Poller) poll(targetID string) PollResult {
 	start := time.Now()
 
@@ -529,12 +519,18 @@ func (p *Poller) poll(targetID string) PollResult {
 	t.mu.RUnlock()
 	p.server.mu.RUnlock()
 
+	// Get defaults
+	p.server.runtimeMu.RLock()
+	defaultTimeout := p.server.defaultTimeoutMs
+	defaultRetries := p.server.defaultRetries
+	p.server.runtimeMu.RUnlock()
+
 	// Configure SNMP
 	snmp := &gosnmp.GoSNMP{
 		Target:  host,
 		Port:    port,
-		Timeout: 5 * time.Second,
-		Retries: 2,
+		Timeout: time.Duration(defaultTimeout) * time.Millisecond,
+		Retries: int(defaultRetries),
 	}
 
 	if snmpCfg != nil {
@@ -627,7 +623,6 @@ func (p *Poller) poll(targetID string) PollResult {
 	return result
 }
 
-// dispatcher verteilt Poll-Ergebnisse an subscribed Sessions.
 func (p *Poller) dispatcher() {
 	for {
 		select {
@@ -639,8 +634,10 @@ func (p *Poller) dispatcher() {
 	}
 }
 
-// dispatchSample schreibt das Sample in den Buffer und sendet an Subscriber.
 func (p *Poller) dispatchSample(r PollResult) {
+	// Record stats
+	p.server.RecordPoll(r.Valid)
+
 	p.server.mu.RLock()
 	t, ok := p.server.targets[r.TargetID]
 	if !ok {
@@ -648,7 +645,6 @@ func (p *Poller) dispatchSample(r PollResult) {
 		return
 	}
 
-	// Write sample to ring buffer
 	t.WriteSample(Sample{
 		TimestampMs: r.TimestampMs,
 		Counter:     r.Counter,
@@ -658,7 +654,6 @@ func (p *Poller) dispatchSample(r PollResult) {
 		PollMs:      r.PollMs,
 	})
 
-	// Sammle alle Sessions die für dieses Target subscribed sind
 	var subscribedSessions []*Session
 	for _, sess := range p.server.sessions {
 		if !sess.IsLost() && sess.IsSubscribed(r.TargetID) {
@@ -667,14 +662,12 @@ func (p *Poller) dispatchSample(r PollResult) {
 	}
 	p.server.mu.RUnlock()
 
-	// Keine Subscriber? Fertig.
 	if len(subscribedSessions) == 0 {
 		return
 	}
 
-	// Build sample envelope
 	env := &pb.Envelope{
-		Id: 0, // Push message
+		Id: 0,
 		Payload: &pb.Envelope_Sample{
 			Sample: &pb.Sample{
 				TargetId:    r.TargetID,
@@ -688,15 +681,10 @@ func (p *Poller) dispatchSample(r PollResult) {
 		},
 	}
 
-	// Send to all subscribed sessions
 	for _, sess := range subscribedSessions {
 		sess.Send(env)
 	}
 }
-
-// ============================================================================
-// SNMP Protocol Mapping
-// ============================================================================
 
 func mapAuthProtocol(p pb.AuthProtocol) gosnmp.SnmpV3AuthProtocol {
 	switch p {
