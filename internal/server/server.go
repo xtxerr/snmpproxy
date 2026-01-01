@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -753,9 +754,12 @@ func (srv *Server) handleUpdateTarget(sess *Session, id uint64, req *pb.UpdateTa
 		sess.Send(wire.NewError(id, wire.ErrInternal, "not owner of target"))
 		return
 	}
+	t.mu.Unlock()
+	srv.mu.Unlock()
 
 	var changed bool
 	var newIntervalMs uint32
+	var changes []string
 
 	// Update interval (0 = not set)
 	if req.GetIntervalMs() > 0 {
@@ -766,39 +770,50 @@ func (srv *Server) handleUpdateTarget(sess *Session, id uint64, req *pb.UpdateTa
 		srv.runtimeMu.RUnlock()
 
 		if newInterval < minInterval {
-			t.mu.Unlock()
-			srv.mu.Unlock()
 			sess.Send(wire.NewError(id, wire.ErrInvalidRequest,
 				fmt.Sprintf("interval_ms must be >= %d", minInterval)))
 			return
 		}
 
+		t.mu.Lock()
 		t.IntervalMs = newInterval
+		t.mu.Unlock()
 		newIntervalMs = newInterval
 		changed = true
+		changes = append(changes, fmt.Sprintf("interval=%dms", newInterval))
 	}
 
 	// Update timeout (0 = not set)
 	if req.GetTimeoutMs() > 0 {
+		t.mu.Lock()
 		if t.SNMP == nil {
 			t.SNMP = &pb.SNMPConfig{}
 		}
 		t.SNMP.TimeoutMs = req.GetTimeoutMs()
+		t.mu.Unlock()
 		changed = true
+		changes = append(changes, fmt.Sprintf("timeout=%dms", req.GetTimeoutMs()))
 	}
 
-	// Update retries (0 = not set, use special value for "set to 0")
+	// Update retries (0 = not set)
 	if req.GetRetries() > 0 {
+		t.mu.Lock()
 		if t.SNMP == nil {
 			t.SNMP = &pb.SNMPConfig{}
 		}
 		t.SNMP.Retries = req.GetRetries()
+		t.mu.Unlock()
 		changed = true
+		changes = append(changes, fmt.Sprintf("retries=%d", req.GetRetries()))
 	}
 
-	targetProto := t.toProtoLocked()
-	t.mu.Unlock()
-	srv.mu.Unlock()
+	// Update buffer size (0 = not set)
+	if req.GetBufferSize() > 0 {
+		newSize := int(req.GetBufferSize())
+		t.ResizeBuffer(newSize)
+		changed = true
+		changes = append(changes, fmt.Sprintf("buffer=%d", newSize))
+	}
 
 	// Update scheduler if interval changed
 	if newIntervalMs > 0 {
@@ -807,7 +822,7 @@ func (srv *Server) handleUpdateTarget(sess *Session, id uint64, req *pb.UpdateTa
 
 	msg := "no changes"
 	if changed {
-		msg = "updated"
+		msg = "updated: " + strings.Join(changes, ", ")
 	}
 
 	sess.Send(&pb.Envelope{
@@ -815,7 +830,7 @@ func (srv *Server) handleUpdateTarget(sess *Session, id uint64, req *pb.UpdateTa
 		Payload: &pb.Envelope_UpdateTargetResp{
 			UpdateTargetResp: &pb.UpdateTargetResponse{
 				Ok:      true,
-				Target:  targetProto,
+				Target:  t.ToProto(),
 				Message: msg,
 			},
 		},

@@ -190,6 +190,45 @@ func (t *Target) ReadLastN(n int) []Sample {
 	return result
 }
 
+// ResizeBuffer changes the buffer size, preserving existing samples.
+// If new size is smaller, only the most recent samples are kept.
+func (t *Target) ResizeBuffer(newSize int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if newSize == t.bufSize {
+		return
+	}
+
+	// Read existing samples (oldest first)
+	samplesToKeep := t.count
+	if samplesToKeep > newSize {
+		samplesToKeep = newSize
+	}
+
+	// Extract samples from old buffer
+	var samples []Sample
+	if samplesToKeep > 0 {
+		// Start from oldest sample we want to keep
+		skipCount := t.count - samplesToKeep
+		start := (t.writeIdx - t.count + skipCount + t.bufSize) % t.bufSize
+		samples = make([]Sample, samplesToKeep)
+		for i := 0; i < samplesToKeep; i++ {
+			samples[i] = t.buffer[(start+i)%t.bufSize]
+		}
+	}
+
+	// Create new buffer and copy samples
+	t.buffer = make([]Sample, newSize)
+	t.bufSize = newSize
+	t.count = samplesToKeep
+	t.writeIdx = samplesToKeep % newSize
+
+	for i, s := range samples {
+		t.buffer[i] = s
+	}
+}
+
 // ToProto converts to protobuf Target (acquires lock).
 func (t *Target) ToProto() *pb.Target {
 	t.mu.RLock()

@@ -79,29 +79,43 @@ func handleSample(s *pb.Sample) {
 
 func printHelp() {
 	fmt.Println("Commands:")
-	fmt.Println("  SNMPv2c:")
-	fmt.Println("    monitor <host> <oid> [name] [-c community] [-i interval_ms]")
-	fmt.Println("  SNMPv3:")
-	fmt.Println("    monitor <host> <oid> [name] -v3 -u user -l level [-a auth_proto -A auth_pass] [-x priv_proto -X priv_pass]")
-	fmt.Println("      -l: noAuthNoPriv, authNoPriv, authPriv")
-	fmt.Println("      -a: MD5, SHA, SHA224, SHA256, SHA384, SHA512")
-	fmt.Println("      -x: DES, AES, AES192, AES256")
 	fmt.Println()
-	fmt.Println("  unmonitor <target-id>")
-	fmt.Println("  list [host-filter]")
-	fmt.Println("  info <target-id>")
-	fmt.Println("  history <target-id> [count]")
-	fmt.Println("  subscribe <target-id>...")
-	fmt.Println("  unsubscribe [target-id]...")
+	fmt.Println("  monitor <host> <oid> [name] [options]")
+	fmt.Println("    Common options:")
+	fmt.Println("      -i <ms>          Poll interval in milliseconds (default: 1000)")
+	fmt.Println("      -b <size>        Buffer size for samples (default: 3600)")
+	fmt.Println("    SNMPv2c (default):")
+	fmt.Println("      -c <community>   Community string (default: public)")
+	fmt.Println("    SNMPv3:")
+	fmt.Println("      -v3              Use SNMPv3")
+	fmt.Println("      -u <user>        Security name (required)")
+	fmt.Println("      -l <level>       Security level: noAuthNoPriv, authNoPriv, authPriv")
+	fmt.Println("      -a <proto>       Auth protocol: MD5, SHA, SHA224, SHA256, SHA384, SHA512")
+	fmt.Println("      -A <pass>        Auth password")
+	fmt.Println("      -x <proto>       Privacy protocol: DES, AES, AES192, AES256")
+	fmt.Println("      -X <pass>        Privacy password")
+	fmt.Println("      -n <name>        Context name")
 	fmt.Println()
-	fmt.Println("  update <target-id> [-i interval] [-t timeout] [-r retries]")
-	fmt.Println("  status                      - Server status")
-	fmt.Println("  session                     - Session info")
-	fmt.Println("  config                      - Show runtime config")
-	fmt.Println("  config set <key> <value>    - Change config")
+	fmt.Println("  unmonitor <target-id>       Stop monitoring and remove target")
+	fmt.Println("  list [host-filter]          List all targets")
+	fmt.Println("  info <target-id>            Show target details and statistics")
+	fmt.Println("  history <target-id> [n]     Show last n samples (default: 10)")
+	fmt.Println("  subscribe <target-id>...    Subscribe to live updates")
+	fmt.Println("  unsubscribe [target-id]...  Unsubscribe (all if no args)")
 	fmt.Println()
-	fmt.Println("  help")
-	fmt.Println("  quit")
+	fmt.Println("  update <target-id> [options]")
+	fmt.Println("      -i <ms>          Change poll interval")
+	fmt.Println("      -t <ms>          Change SNMP timeout")
+	fmt.Println("      -r <n>           Change SNMP retries")
+	fmt.Println("      -b <size>        Change buffer size")
+	fmt.Println()
+	fmt.Println("  status                      Show server status")
+	fmt.Println("  session                     Show current session info")
+	fmt.Println("  config                      Show runtime configuration")
+	fmt.Println("  config set <key> <value>    Change config (timeout, retries, buffer, min-interval)")
+	fmt.Println()
+	fmt.Println("  help                        Show this help")
+	fmt.Println("  quit                        Disconnect and exit")
 	fmt.Println()
 }
 
@@ -190,8 +204,8 @@ func parseArgs(line string) []string {
 func cmdMonitor(args []string) {
 	if len(args) < 2 {
 		fmt.Println("Usage: monitor <host> <oid> [name] [options]")
-		fmt.Println("  v2c: -c community -i interval_ms")
-		fmt.Println("  v3:  -v3 -u user -l level -a auth_proto -A auth_pass -x priv_proto -X priv_pass")
+		fmt.Println("  v2c: -c community -i interval_ms -b buffer_size")
+		fmt.Println("  v3:  -v3 -u user -l level -a auth_proto -A auth_pass -x priv_proto -X priv_pass -i interval_ms -b buffer_size")
 		return
 	}
 
@@ -201,6 +215,7 @@ func cmdMonitor(args []string) {
 	// Defaults
 	name := host + "/" + oid
 	interval := uint32(1000)
+	bufferSize := uint32(3600)
 	community := "public"
 	useV3 := false
 	securityName := ""
@@ -227,6 +242,15 @@ func cmdMonitor(args []string) {
 			if i+1 < len(args) {
 				if v, err := strconv.Atoi(args[i+1]); err == nil {
 					interval = uint32(v)
+				}
+				i += 2
+			} else {
+				i++
+			}
+		case "-b":
+			if i+1 < len(args) {
+				if v, err := strconv.Atoi(args[i+1]); err == nil {
+					bufferSize = uint32(v)
 				}
 				i += 2
 			} else {
@@ -298,7 +322,7 @@ func cmdMonitor(args []string) {
 		Port:       161,
 		Oid:        oid,
 		IntervalMs: interval,
-		BufferSize: 3600,
+		BufferSize: bufferSize,
 	}
 
 	if useV3 {
@@ -642,7 +666,7 @@ func cmdSession() {
 
 func cmdUpdate(args []string) {
 	if len(args) < 1 {
-		fmt.Println("Usage: update <target-id> [-i interval] [-t timeout] [-r retries]")
+		fmt.Println("Usage: update <target-id> [-i interval] [-t timeout] [-r retries] [-b buffer]")
 		return
 	}
 
@@ -672,6 +696,13 @@ func cmdUpdate(args []string) {
 					req.Retries = uint32(v)
 				}
 			}
+		case "-b", "--buffer":
+			if i+1 < len(args) {
+				i++
+				if v, err := strconv.ParseUint(args[i], 10, 32); err == nil {
+					req.BufferSize = uint32(v)
+				}
+			}
 		}
 	}
 
@@ -684,7 +715,8 @@ func cmdUpdate(args []string) {
 	if resp.Ok {
 		fmt.Printf("Updated: %s\n", resp.Message)
 		if resp.Target != nil {
-			fmt.Printf("  Interval: %d ms\n", resp.Target.IntervalMs)
+			fmt.Printf("  Interval: %d ms, Buffer: %d/%d\n", 
+				resp.Target.IntervalMs, resp.Target.SamplesBuffered, resp.Target.BufferSize)
 		}
 	} else {
 		fmt.Printf("Failed: %s\n", resp.Message)

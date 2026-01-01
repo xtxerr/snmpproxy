@@ -2423,6 +2423,7 @@ type UpdateTargetRequest struct {
 	IntervalMs    uint32                 `protobuf:"varint,2,opt,name=interval_ms,json=intervalMs,proto3" json:"interval_ms,omitempty"` // 0 = don't change
 	TimeoutMs     uint32                 `protobuf:"varint,3,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`    // 0 = don't change
 	Retries       uint32                 `protobuf:"varint,4,opt,name=retries,proto3" json:"retries,omitempty"`                         // 0 = don't change
+	BufferSize    uint32                 `protobuf:"varint,5,opt,name=buffer_size,json=bufferSize,proto3" json:"buffer_size,omitempty"` // 0 = don't change
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2481,6 +2482,13 @@ func (x *UpdateTargetRequest) GetTimeoutMs() uint32 {
 func (x *UpdateTargetRequest) GetRetries() uint32 {
 	if x != nil {
 		return x.Retries
+	}
+	return 0
+}
+
+func (x *UpdateTargetRequest) GetBufferSize() uint32 {
+	if x != nil {
+		return x.BufferSize
 	}
 	return 0
 }
@@ -3024,14 +3032,16 @@ const file_snmpproxy_proto_rawDesc = "" +
 	"\x0fconnected_at_ms\x18\x04 \x01(\x03R\rconnectedAtMs\x12#\n" +
 	"\rowned_targets\x18\n" +
 	" \x03(\tR\fownedTargets\x12-\n" +
-	"\x12subscribed_targets\x18\v \x03(\tR\x11subscribedTargets\"\x8c\x01\n" +
+	"\x12subscribed_targets\x18\v \x03(\tR\x11subscribedTargets\"\xad\x01\n" +
 	"\x13UpdateTargetRequest\x12\x1b\n" +
 	"\ttarget_id\x18\x01 \x01(\tR\btargetId\x12\x1f\n" +
 	"\vinterval_ms\x18\x02 \x01(\rR\n" +
 	"intervalMs\x12\x1d\n" +
 	"\n" +
 	"timeout_ms\x18\x03 \x01(\rR\ttimeoutMs\x12\x18\n" +
-	"\aretries\x18\x04 \x01(\rR\aretries\"n\n" +
+	"\aretries\x18\x04 \x01(\rR\aretries\x12\x1f\n" +
+	"\vbuffer_size\x18\x05 \x01(\rR\n" +
+	"bufferSize\"n\n" +
 	"\x14UpdateTargetResponse\x12\x0e\n" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\x12,\n" +
 	"\x06target\x18\x02 \x01(\v2\x14.snmpproxy.v1.TargetR\x06target\x12\x18\n" +

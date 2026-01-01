@@ -316,6 +316,7 @@ message UpdateTargetRequest {
   uint32 interval_ms = 2;   // 0 = don't change
   uint32 timeout_ms = 3;    // 0 = don't change
   uint32 retries = 4;       // 0 = don't change
+  uint32 buffer_size = 5;   // 0 = don't change
 }
 
 message UpdateTargetResponse {
