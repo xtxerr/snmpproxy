@@ -352,6 +352,7 @@ func (srv *Server) handleMonitor(sess *Session, id uint64, req *pb.MonitorReques
 	if existingID, ok := srv.targetIndex[key]; ok {
 		t := srv.targets[existingID]
 		t.AddSubscriber(sess.ID)
+                sess.Subscribe(existingID)
 		sess.Send(&pb.Envelope{
 			Id: id,
 			Payload: &pb.Envelope_MonitorResp{
@@ -366,6 +367,7 @@ func (srv *Server) handleMonitor(sess *Session, id uint64, req *pb.MonitorReques
 	targetID := srv.genID()
 	t := NewTarget(targetID, req, srv.cfg.SNMP.BufferSize)
 	t.AddSubscriber(sess.ID)
+        sess.Subscribe(targetID)
 
 	srv.targets[targetID] = t
 	srv.targetIndex[key] = targetID
