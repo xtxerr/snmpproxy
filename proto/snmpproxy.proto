@@ -313,9 +313,9 @@ message GetSessionInfoResponse {
 
 message UpdateTargetRequest {
   string target_id = 1;
-  optional uint32 interval_ms = 2;
-  optional uint32 timeout_ms = 3;
-  optional uint32 retries = 4;
+  uint32 interval_ms = 2;   // 0 = don't change
+  uint32 timeout_ms = 3;    // 0 = don't change
+  uint32 retries = 4;       // 0 = don't change
 }
 
 message UpdateTargetResponse {
@@ -335,10 +335,10 @@ message GetConfigResponse {
 }
 
 message SetConfigRequest {
-  optional uint32 default_timeout_ms = 1;
-  optional uint32 default_retries = 2;
-  optional uint32 default_buffer_size = 3;
-  optional uint32 min_interval_ms = 4;
+  uint32 default_timeout_ms = 1;   // 0 = don't change
+  uint32 default_retries = 2;      // 0 = don't change
+  uint32 default_buffer_size = 3;  // 0 = don't change
+  uint32 min_interval_ms = 4;      // 0 = don't change
 }
 
 message SetConfigResponse {

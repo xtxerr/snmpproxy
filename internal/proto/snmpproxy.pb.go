@@ -202,6 +202,11 @@ type Envelope struct {
 	//	*Envelope_GetHistory
 	//	*Envelope_Subscribe
 	//	*Envelope_Unsubscribe
+	//	*Envelope_GetServerStatus
+	//	*Envelope_GetSessionInfo
+	//	*Envelope_UpdateTarget
+	//	*Envelope_GetConfig
+	//	*Envelope_SetConfig
 	//	*Envelope_AuthResp
 	//	*Envelope_MonitorResp
 	//	*Envelope_UnmonitorResp
@@ -210,6 +215,11 @@ type Envelope struct {
 	//	*Envelope_GetHistoryResp
 	//	*Envelope_SubscribeResp
 	//	*Envelope_UnsubscribeResp
+	//	*Envelope_GetServerStatusResp
+	//	*Envelope_GetSessionInfoResp
+	//	*Envelope_UpdateTargetResp
+	//	*Envelope_GetConfigResp
+	//	*Envelope_SetConfigResp
 	//	*Envelope_Sample
 	//	*Envelope_Error
 	Payload       isEnvelope_Payload `protobuf_oneof:"payload"`
@@ -333,6 +343,51 @@ func (x *Envelope) GetUnsubscribe() *UnsubscribeRequest {
 	return nil
 }
 
+func (x *Envelope) GetGetServerStatus() *GetServerStatusRequest {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_GetServerStatus); ok {
+			return x.GetServerStatus
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetGetSessionInfo() *GetSessionInfoRequest {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_GetSessionInfo); ok {
+			return x.GetSessionInfo
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetUpdateTarget() *UpdateTargetRequest {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_UpdateTarget); ok {
+			return x.UpdateTarget
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetGetConfig() *GetConfigRequest {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_GetConfig); ok {
+			return x.GetConfig
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetSetConfig() *SetConfigRequest {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_SetConfig); ok {
+			return x.SetConfig
+		}
+	}
+	return nil
+}
+
 func (x *Envelope) GetAuthResp() *AuthResponse {
 	if x != nil {
 		if x, ok := x.Payload.(*Envelope_AuthResp); ok {
@@ -405,6 +460,51 @@ func (x *Envelope) GetUnsubscribeResp() *UnsubscribeResponse {
 	return nil
 }
 
+func (x *Envelope) GetGetServerStatusResp() *GetServerStatusResponse {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_GetServerStatusResp); ok {
+			return x.GetServerStatusResp
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetGetSessionInfoResp() *GetSessionInfoResponse {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_GetSessionInfoResp); ok {
+			return x.GetSessionInfoResp
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetUpdateTargetResp() *UpdateTargetResponse {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_UpdateTargetResp); ok {
+			return x.UpdateTargetResp
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetGetConfigResp() *GetConfigResponse {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_GetConfigResp); ok {
+			return x.GetConfigResp
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetSetConfigResp() *SetConfigResponse {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_SetConfigResp); ok {
+			return x.SetConfigResp
+		}
+	}
+	return nil
+}
+
 func (x *Envelope) GetSample() *Sample {
 	if x != nil {
 		if x, ok := x.Payload.(*Envelope_Sample); ok {
@@ -460,6 +560,27 @@ type Envelope_Unsubscribe struct {
 	Unsubscribe *UnsubscribeRequest `protobuf:"bytes,17,opt,name=unsubscribe,proto3,oneof"`
 }
 
+type Envelope_GetServerStatus struct {
+	// NEW: Status & Config (Client → Server)
+	GetServerStatus *GetServerStatusRequest `protobuf:"bytes,18,opt,name=get_server_status,json=getServerStatus,proto3,oneof"`
+}
+
+type Envelope_GetSessionInfo struct {
+	GetSessionInfo *GetSessionInfoRequest `protobuf:"bytes,19,opt,name=get_session_info,json=getSessionInfo,proto3,oneof"`
+}
+
+type Envelope_UpdateTarget struct {
+	UpdateTarget *UpdateTargetRequest `protobuf:"bytes,20,opt,name=update_target,json=updateTarget,proto3,oneof"`
+}
+
+type Envelope_GetConfig struct {
+	GetConfig *GetConfigRequest `protobuf:"bytes,21,opt,name=get_config,json=getConfig,proto3,oneof"`
+}
+
+type Envelope_SetConfig struct {
+	SetConfig *SetConfigRequest `protobuf:"bytes,22,opt,name=set_config,json=setConfig,proto3,oneof"`
+}
+
 type Envelope_AuthResp struct {
 	// Server → Client
 	AuthResp *AuthResponse `protobuf:"bytes,50,opt,name=auth_resp,json=authResp,proto3,oneof"`
@@ -493,6 +614,27 @@ type Envelope_UnsubscribeResp struct {
 	UnsubscribeResp *UnsubscribeResponse `protobuf:"bytes,57,opt,name=unsubscribe_resp,json=unsubscribeResp,proto3,oneof"`
 }
 
+type Envelope_GetServerStatusResp struct {
+	// NEW: Status & Config (Server → Client)
+	GetServerStatusResp *GetServerStatusResponse `protobuf:"bytes,58,opt,name=get_server_status_resp,json=getServerStatusResp,proto3,oneof"`
+}
+
+type Envelope_GetSessionInfoResp struct {
+	GetSessionInfoResp *GetSessionInfoResponse `protobuf:"bytes,59,opt,name=get_session_info_resp,json=getSessionInfoResp,proto3,oneof"`
+}
+
+type Envelope_UpdateTargetResp struct {
+	UpdateTargetResp *UpdateTargetResponse `protobuf:"bytes,60,opt,name=update_target_resp,json=updateTargetResp,proto3,oneof"`
+}
+
+type Envelope_GetConfigResp struct {
+	GetConfigResp *GetConfigResponse `protobuf:"bytes,61,opt,name=get_config_resp,json=getConfigResp,proto3,oneof"`
+}
+
+type Envelope_SetConfigResp struct {
+	SetConfigResp *SetConfigResponse `protobuf:"bytes,62,opt,name=set_config_resp,json=setConfigResp,proto3,oneof"`
+}
+
 type Envelope_Sample struct {
 	// Server → Client (Push, id=0)
 	Sample *Sample `protobuf:"bytes,80,opt,name=sample,proto3,oneof"`
@@ -519,6 +661,16 @@ func (*Envelope_Subscribe) isEnvelope_Payload() {}
 
 func (*Envelope_Unsubscribe) isEnvelope_Payload() {}
 
+func (*Envelope_GetServerStatus) isEnvelope_Payload() {}
+
+func (*Envelope_GetSessionInfo) isEnvelope_Payload() {}
+
+func (*Envelope_UpdateTarget) isEnvelope_Payload() {}
+
+func (*Envelope_GetConfig) isEnvelope_Payload() {}
+
+func (*Envelope_SetConfig) isEnvelope_Payload() {}
+
 func (*Envelope_AuthResp) isEnvelope_Payload() {}
 
 func (*Envelope_MonitorResp) isEnvelope_Payload() {}
@@ -534,6 +686,16 @@ func (*Envelope_GetHistoryResp) isEnvelope_Payload() {}
 func (*Envelope_SubscribeResp) isEnvelope_Payload() {}
 
 func (*Envelope_UnsubscribeResp) isEnvelope_Payload() {}
+
+func (*Envelope_GetServerStatusResp) isEnvelope_Payload() {}
+
+func (*Envelope_GetSessionInfoResp) isEnvelope_Payload() {}
+
+func (*Envelope_UpdateTargetResp) isEnvelope_Payload() {}
+
+func (*Envelope_GetConfigResp) isEnvelope_Payload() {}
+
+func (*Envelope_SetConfigResp) isEnvelope_Payload() {}
 
 func (*Envelope_Sample) isEnvelope_Payload() {}
 
@@ -934,8 +1096,16 @@ type Target struct {
 	LastError       string `protobuf:"bytes,12,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
 	Subscribers     int32  `protobuf:"varint,13,opt,name=subscribers,proto3" json:"subscribers,omitempty"`
 	SamplesBuffered int32  `protobuf:"varint,14,opt,name=samples_buffered,json=samplesBuffered,proto3" json:"samples_buffered,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// NEW: Extended statistics
+	CreatedAtMs   int64 `protobuf:"varint,20,opt,name=created_at_ms,json=createdAtMs,proto3" json:"created_at_ms,omitempty"`
+	PollsTotal    int64 `protobuf:"varint,21,opt,name=polls_total,json=pollsTotal,proto3" json:"polls_total,omitempty"`
+	PollsSuccess  int64 `protobuf:"varint,22,opt,name=polls_success,json=pollsSuccess,proto3" json:"polls_success,omitempty"`
+	PollsFailed   int64 `protobuf:"varint,23,opt,name=polls_failed,json=pollsFailed,proto3" json:"polls_failed,omitempty"`
+	AvgPollMs     int32 `protobuf:"varint,24,opt,name=avg_poll_ms,json=avgPollMs,proto3" json:"avg_poll_ms,omitempty"`
+	MinPollMs     int32 `protobuf:"varint,25,opt,name=min_poll_ms,json=minPollMs,proto3" json:"min_poll_ms,omitempty"`
+	MaxPollMs     int32 `protobuf:"varint,26,opt,name=max_poll_ms,json=maxPollMs,proto3" json:"max_poll_ms,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Target) Reset() {
@@ -1041,6 +1211,55 @@ func (x *Target) GetSubscribers() int32 {
 func (x *Target) GetSamplesBuffered() int32 {
 	if x != nil {
 		return x.SamplesBuffered
+	}
+	return 0
+}
+
+func (x *Target) GetCreatedAtMs() int64 {
+	if x != nil {
+		return x.CreatedAtMs
+	}
+	return 0
+}
+
+func (x *Target) GetPollsTotal() int64 {
+	if x != nil {
+		return x.PollsTotal
+	}
+	return 0
+}
+
+func (x *Target) GetPollsSuccess() int64 {
+	if x != nil {
+		return x.PollsSuccess
+	}
+	return 0
+}
+
+func (x *Target) GetPollsFailed() int64 {
+	if x != nil {
+		return x.PollsFailed
+	}
+	return 0
+}
+
+func (x *Target) GetAvgPollMs() int32 {
+	if x != nil {
+		return x.AvgPollMs
+	}
+	return 0
+}
+
+func (x *Target) GetMinPollMs() int32 {
+	if x != nil {
+		return x.MinPollMs
+	}
+	return 0
+}
+
+func (x *Target) GetMaxPollMs() int32 {
+	if x != nil {
+		return x.MaxPollMs
 	}
 	return 0
 }
@@ -1881,11 +2100,758 @@ func (x *UnsubscribeResponse) GetOk() bool {
 	return false
 }
 
+type GetServerStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetServerStatusRequest) Reset() {
+	*x = GetServerStatusRequest{}
+	mi := &file_snmpproxy_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetServerStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetServerStatusRequest) ProtoMessage() {}
+
+func (x *GetServerStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_snmpproxy_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetServerStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetServerStatusRequest) Descriptor() ([]byte, []int) {
+	return file_snmpproxy_proto_rawDescGZIP(), []int{24}
+}
+
+type GetServerStatusResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// General
+	Version     string `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
+	UptimeMs    int64  `protobuf:"varint,2,opt,name=uptime_ms,json=uptimeMs,proto3" json:"uptime_ms,omitempty"`
+	StartedAtMs int64  `protobuf:"varint,3,opt,name=started_at_ms,json=startedAtMs,proto3" json:"started_at_ms,omitempty"`
+	// Sessions
+	SessionsActive int32 `protobuf:"varint,10,opt,name=sessions_active,json=sessionsActive,proto3" json:"sessions_active,omitempty"`
+	SessionsLost   int32 `protobuf:"varint,11,opt,name=sessions_lost,json=sessionsLost,proto3" json:"sessions_lost,omitempty"`
+	// Targets
+	TargetsTotal       int32 `protobuf:"varint,20,opt,name=targets_total,json=targetsTotal,proto3" json:"targets_total,omitempty"`
+	TargetsPolling     int32 `protobuf:"varint,21,opt,name=targets_polling,json=targetsPolling,proto3" json:"targets_polling,omitempty"`
+	TargetsUnreachable int32 `protobuf:"varint,22,opt,name=targets_unreachable,json=targetsUnreachable,proto3" json:"targets_unreachable,omitempty"`
+	// Poller
+	PollerWorkers       int32 `protobuf:"varint,30,opt,name=poller_workers,json=pollerWorkers,proto3" json:"poller_workers,omitempty"`
+	PollerQueueUsed     int32 `protobuf:"varint,31,opt,name=poller_queue_used,json=pollerQueueUsed,proto3" json:"poller_queue_used,omitempty"`
+	PollerQueueCapacity int32 `protobuf:"varint,32,opt,name=poller_queue_capacity,json=pollerQueueCapacity,proto3" json:"poller_queue_capacity,omitempty"`
+	PollerHeapSize      int32 `protobuf:"varint,33,opt,name=poller_heap_size,json=pollerHeapSize,proto3" json:"poller_heap_size,omitempty"`
+	// Statistics (since start)
+	PollsTotal    int64 `protobuf:"varint,40,opt,name=polls_total,json=pollsTotal,proto3" json:"polls_total,omitempty"`
+	PollsSuccess  int64 `protobuf:"varint,41,opt,name=polls_success,json=pollsSuccess,proto3" json:"polls_success,omitempty"`
+	PollsFailed   int64 `protobuf:"varint,42,opt,name=polls_failed,json=pollsFailed,proto3" json:"polls_failed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetServerStatusResponse) Reset() {
+	*x = GetServerStatusResponse{}
+	mi := &file_snmpproxy_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetServerStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetServerStatusResponse) ProtoMessage() {}
+
+func (x *GetServerStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_snmpproxy_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetServerStatusResponse.ProtoReflect.Descriptor instead.
+func (*GetServerStatusResponse) Descriptor() ([]byte, []int) {
+	return file_snmpproxy_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *GetServerStatusResponse) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *GetServerStatusResponse) GetUptimeMs() int64 {
+	if x != nil {
+		return x.UptimeMs
+	}
+	return 0
+}
+
+func (x *GetServerStatusResponse) GetStartedAtMs() int64 {
+	if x != nil {
+		return x.StartedAtMs
+	}
+	return 0
+}
+
+func (x *GetServerStatusResponse) GetSessionsActive() int32 {
+	if x != nil {
+		return x.SessionsActive
+	}
+	return 0
+}
+
+func (x *GetServerStatusResponse) GetSessionsLost() int32 {
+	if x != nil {
+		return x.SessionsLost
+	}
+	return 0
+}
+
+func (x *GetServerStatusResponse) GetTargetsTotal() int32 {
+	if x != nil {
+		return x.TargetsTotal
+	}
+	return 0
+}
+
+func (x *GetServerStatusResponse) GetTargetsPolling() int32 {
+	if x != nil {
+		return x.TargetsPolling
+	}
+	return 0
+}
+
+func (x *GetServerStatusResponse) GetTargetsUnreachable() int32 {
+	if x != nil {
+		return x.TargetsUnreachable
+	}
+	return 0
+}
+
+func (x *GetServerStatusResponse) GetPollerWorkers() int32 {
+	if x != nil {
+		return x.PollerWorkers
+	}
+	return 0
+}
+
+func (x *GetServerStatusResponse) GetPollerQueueUsed() int32 {
+	if x != nil {
+		return x.PollerQueueUsed
+	}
+	return 0
+}
+
+func (x *GetServerStatusResponse) GetPollerQueueCapacity() int32 {
+	if x != nil {
+		return x.PollerQueueCapacity
+	}
+	return 0
+}
+
+func (x *GetServerStatusResponse) GetPollerHeapSize() int32 {
+	if x != nil {
+		return x.PollerHeapSize
+	}
+	return 0
+}
+
+func (x *GetServerStatusResponse) GetPollsTotal() int64 {
+	if x != nil {
+		return x.PollsTotal
+	}
+	return 0
+}
+
+func (x *GetServerStatusResponse) GetPollsSuccess() int64 {
+	if x != nil {
+		return x.PollsSuccess
+	}
+	return 0
+}
+
+func (x *GetServerStatusResponse) GetPollsFailed() int64 {
+	if x != nil {
+		return x.PollsFailed
+	}
+	return 0
+}
+
+type GetSessionInfoRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSessionInfoRequest) Reset() {
+	*x = GetSessionInfoRequest{}
+	mi := &file_snmpproxy_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSessionInfoRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSessionInfoRequest) ProtoMessage() {}
+
+func (x *GetSessionInfoRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_snmpproxy_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSessionInfoRequest.ProtoReflect.Descriptor instead.
+func (*GetSessionInfoRequest) Descriptor() ([]byte, []int) {
+	return file_snmpproxy_proto_rawDescGZIP(), []int{26}
+}
+
+type GetSessionInfoResponse struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	SessionId         string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	TokenId           string                 `protobuf:"bytes,2,opt,name=token_id,json=tokenId,proto3" json:"token_id,omitempty"`
+	CreatedAtMs       int64                  `protobuf:"varint,3,opt,name=created_at_ms,json=createdAtMs,proto3" json:"created_at_ms,omitempty"`
+	ConnectedAtMs     int64                  `protobuf:"varint,4,opt,name=connected_at_ms,json=connectedAtMs,proto3" json:"connected_at_ms,omitempty"`
+	OwnedTargets      []string               `protobuf:"bytes,10,rep,name=owned_targets,json=ownedTargets,proto3" json:"owned_targets,omitempty"`
+	SubscribedTargets []string               `protobuf:"bytes,11,rep,name=subscribed_targets,json=subscribedTargets,proto3" json:"subscribed_targets,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *GetSessionInfoResponse) Reset() {
+	*x = GetSessionInfoResponse{}
+	mi := &file_snmpproxy_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSessionInfoResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSessionInfoResponse) ProtoMessage() {}
+
+func (x *GetSessionInfoResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_snmpproxy_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSessionInfoResponse.ProtoReflect.Descriptor instead.
+func (*GetSessionInfoResponse) Descriptor() ([]byte, []int) {
+	return file_snmpproxy_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *GetSessionInfoResponse) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *GetSessionInfoResponse) GetTokenId() string {
+	if x != nil {
+		return x.TokenId
+	}
+	return ""
+}
+
+func (x *GetSessionInfoResponse) GetCreatedAtMs() int64 {
+	if x != nil {
+		return x.CreatedAtMs
+	}
+	return 0
+}
+
+func (x *GetSessionInfoResponse) GetConnectedAtMs() int64 {
+	if x != nil {
+		return x.ConnectedAtMs
+	}
+	return 0
+}
+
+func (x *GetSessionInfoResponse) GetOwnedTargets() []string {
+	if x != nil {
+		return x.OwnedTargets
+	}
+	return nil
+}
+
+func (x *GetSessionInfoResponse) GetSubscribedTargets() []string {
+	if x != nil {
+		return x.SubscribedTargets
+	}
+	return nil
+}
+
+type UpdateTargetRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TargetId      string                 `protobuf:"bytes,1,opt,name=target_id,json=targetId,proto3" json:"target_id,omitempty"`
+	IntervalMs    uint32                 `protobuf:"varint,2,opt,name=interval_ms,json=intervalMs,proto3" json:"interval_ms,omitempty"` // 0 = don't change
+	TimeoutMs     uint32                 `protobuf:"varint,3,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`    // 0 = don't change
+	Retries       uint32                 `protobuf:"varint,4,opt,name=retries,proto3" json:"retries,omitempty"`                         // 0 = don't change
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateTargetRequest) Reset() {
+	*x = UpdateTargetRequest{}
+	mi := &file_snmpproxy_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateTargetRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateTargetRequest) ProtoMessage() {}
+
+func (x *UpdateTargetRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_snmpproxy_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateTargetRequest.ProtoReflect.Descriptor instead.
+func (*UpdateTargetRequest) Descriptor() ([]byte, []int) {
+	return file_snmpproxy_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *UpdateTargetRequest) GetTargetId() string {
+	if x != nil {
+		return x.TargetId
+	}
+	return ""
+}
+
+func (x *UpdateTargetRequest) GetIntervalMs() uint32 {
+	if x != nil {
+		return x.IntervalMs
+	}
+	return 0
+}
+
+func (x *UpdateTargetRequest) GetTimeoutMs() uint32 {
+	if x != nil {
+		return x.TimeoutMs
+	}
+	return 0
+}
+
+func (x *UpdateTargetRequest) GetRetries() uint32 {
+	if x != nil {
+		return x.Retries
+	}
+	return 0
+}
+
+type UpdateTargetResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ok            bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
+	Target        *Target                `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
+	Message       string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateTargetResponse) Reset() {
+	*x = UpdateTargetResponse{}
+	mi := &file_snmpproxy_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateTargetResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateTargetResponse) ProtoMessage() {}
+
+func (x *UpdateTargetResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_snmpproxy_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateTargetResponse.ProtoReflect.Descriptor instead.
+func (*UpdateTargetResponse) Descriptor() ([]byte, []int) {
+	return file_snmpproxy_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *UpdateTargetResponse) GetOk() bool {
+	if x != nil {
+		return x.Ok
+	}
+	return false
+}
+
+func (x *UpdateTargetResponse) GetTarget() *Target {
+	if x != nil {
+		return x.Target
+	}
+	return nil
+}
+
+func (x *UpdateTargetResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+type GetConfigRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetConfigRequest) Reset() {
+	*x = GetConfigRequest{}
+	mi := &file_snmpproxy_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetConfigRequest) ProtoMessage() {}
+
+func (x *GetConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_snmpproxy_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetConfigRequest.ProtoReflect.Descriptor instead.
+func (*GetConfigRequest) Descriptor() ([]byte, []int) {
+	return file_snmpproxy_proto_rawDescGZIP(), []int{30}
+}
+
+type GetConfigResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Config        *RuntimeConfig         `protobuf:"bytes,1,opt,name=config,proto3" json:"config,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetConfigResponse) Reset() {
+	*x = GetConfigResponse{}
+	mi := &file_snmpproxy_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetConfigResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetConfigResponse) ProtoMessage() {}
+
+func (x *GetConfigResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_snmpproxy_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetConfigResponse.ProtoReflect.Descriptor instead.
+func (*GetConfigResponse) Descriptor() ([]byte, []int) {
+	return file_snmpproxy_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *GetConfigResponse) GetConfig() *RuntimeConfig {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
+type SetConfigRequest struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	DefaultTimeoutMs  uint32                 `protobuf:"varint,1,opt,name=default_timeout_ms,json=defaultTimeoutMs,proto3" json:"default_timeout_ms,omitempty"`    // 0 = don't change
+	DefaultRetries    uint32                 `protobuf:"varint,2,opt,name=default_retries,json=defaultRetries,proto3" json:"default_retries,omitempty"`            // 0 = don't change
+	DefaultBufferSize uint32                 `protobuf:"varint,3,opt,name=default_buffer_size,json=defaultBufferSize,proto3" json:"default_buffer_size,omitempty"` // 0 = don't change
+	MinIntervalMs     uint32                 `protobuf:"varint,4,opt,name=min_interval_ms,json=minIntervalMs,proto3" json:"min_interval_ms,omitempty"`             // 0 = don't change
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *SetConfigRequest) Reset() {
+	*x = SetConfigRequest{}
+	mi := &file_snmpproxy_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetConfigRequest) ProtoMessage() {}
+
+func (x *SetConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_snmpproxy_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetConfigRequest.ProtoReflect.Descriptor instead.
+func (*SetConfigRequest) Descriptor() ([]byte, []int) {
+	return file_snmpproxy_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *SetConfigRequest) GetDefaultTimeoutMs() uint32 {
+	if x != nil {
+		return x.DefaultTimeoutMs
+	}
+	return 0
+}
+
+func (x *SetConfigRequest) GetDefaultRetries() uint32 {
+	if x != nil {
+		return x.DefaultRetries
+	}
+	return 0
+}
+
+func (x *SetConfigRequest) GetDefaultBufferSize() uint32 {
+	if x != nil {
+		return x.DefaultBufferSize
+	}
+	return 0
+}
+
+func (x *SetConfigRequest) GetMinIntervalMs() uint32 {
+	if x != nil {
+		return x.MinIntervalMs
+	}
+	return 0
+}
+
+type SetConfigResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ok            bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
+	Config        *RuntimeConfig         `protobuf:"bytes,2,opt,name=config,proto3" json:"config,omitempty"`
+	Message       string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetConfigResponse) Reset() {
+	*x = SetConfigResponse{}
+	mi := &file_snmpproxy_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetConfigResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetConfigResponse) ProtoMessage() {}
+
+func (x *SetConfigResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_snmpproxy_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetConfigResponse.ProtoReflect.Descriptor instead.
+func (*SetConfigResponse) Descriptor() ([]byte, []int) {
+	return file_snmpproxy_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *SetConfigResponse) GetOk() bool {
+	if x != nil {
+		return x.Ok
+	}
+	return false
+}
+
+func (x *SetConfigResponse) GetConfig() *RuntimeConfig {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
+func (x *SetConfigResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+type RuntimeConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Changeable at runtime
+	DefaultTimeoutMs  uint32 `protobuf:"varint,1,opt,name=default_timeout_ms,json=defaultTimeoutMs,proto3" json:"default_timeout_ms,omitempty"`
+	DefaultRetries    uint32 `protobuf:"varint,2,opt,name=default_retries,json=defaultRetries,proto3" json:"default_retries,omitempty"`
+	DefaultBufferSize uint32 `protobuf:"varint,3,opt,name=default_buffer_size,json=defaultBufferSize,proto3" json:"default_buffer_size,omitempty"`
+	MinIntervalMs     uint32 `protobuf:"varint,4,opt,name=min_interval_ms,json=minIntervalMs,proto3" json:"min_interval_ms,omitempty"`
+	// Read-only (set at startup)
+	PollerWorkers      int32  `protobuf:"varint,10,opt,name=poller_workers,json=pollerWorkers,proto3" json:"poller_workers,omitempty"`
+	PollerQueueSize    int32  `protobuf:"varint,11,opt,name=poller_queue_size,json=pollerQueueSize,proto3" json:"poller_queue_size,omitempty"`
+	ReconnectWindowSec uint32 `protobuf:"varint,12,opt,name=reconnect_window_sec,json=reconnectWindowSec,proto3" json:"reconnect_window_sec,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *RuntimeConfig) Reset() {
+	*x = RuntimeConfig{}
+	mi := &file_snmpproxy_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RuntimeConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RuntimeConfig) ProtoMessage() {}
+
+func (x *RuntimeConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_snmpproxy_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RuntimeConfig.ProtoReflect.Descriptor instead.
+func (*RuntimeConfig) Descriptor() ([]byte, []int) {
+	return file_snmpproxy_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *RuntimeConfig) GetDefaultTimeoutMs() uint32 {
+	if x != nil {
+		return x.DefaultTimeoutMs
+	}
+	return 0
+}
+
+func (x *RuntimeConfig) GetDefaultRetries() uint32 {
+	if x != nil {
+		return x.DefaultRetries
+	}
+	return 0
+}
+
+func (x *RuntimeConfig) GetDefaultBufferSize() uint32 {
+	if x != nil {
+		return x.DefaultBufferSize
+	}
+	return 0
+}
+
+func (x *RuntimeConfig) GetMinIntervalMs() uint32 {
+	if x != nil {
+		return x.MinIntervalMs
+	}
+	return 0
+}
+
+func (x *RuntimeConfig) GetPollerWorkers() int32 {
+	if x != nil {
+		return x.PollerWorkers
+	}
+	return 0
+}
+
+func (x *RuntimeConfig) GetPollerQueueSize() int32 {
+	if x != nil {
+		return x.PollerQueueSize
+	}
+	return 0
+}
+
+func (x *RuntimeConfig) GetReconnectWindowSec() uint32 {
+	if x != nil {
+		return x.ReconnectWindowSec
+	}
+	return 0
+}
+
 var File_snmpproxy_proto protoreflect.FileDescriptor
 
 const file_snmpproxy_proto_rawDesc = "" +
 	"\n" +
-	"\x0fsnmpproxy.proto\x12\fsnmpproxy.v1\"\xcc\t\n" +
+	"\x0fsnmpproxy.proto\x12\fsnmpproxy.v1\"\xe0\x0f\n" +
 	"\bEnvelope\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12/\n" +
 	"\x04auth\x18\n" +
@@ -1898,7 +2864,14 @@ const file_snmpproxy_proto_rawDesc = "" +
 	"\vget_history\x18\x0f \x01(\v2\x1f.snmpproxy.v1.GetHistoryRequestH\x00R\n" +
 	"getHistory\x12>\n" +
 	"\tsubscribe\x18\x10 \x01(\v2\x1e.snmpproxy.v1.SubscribeRequestH\x00R\tsubscribe\x12D\n" +
-	"\vunsubscribe\x18\x11 \x01(\v2 .snmpproxy.v1.UnsubscribeRequestH\x00R\vunsubscribe\x129\n" +
+	"\vunsubscribe\x18\x11 \x01(\v2 .snmpproxy.v1.UnsubscribeRequestH\x00R\vunsubscribe\x12R\n" +
+	"\x11get_server_status\x18\x12 \x01(\v2$.snmpproxy.v1.GetServerStatusRequestH\x00R\x0fgetServerStatus\x12O\n" +
+	"\x10get_session_info\x18\x13 \x01(\v2#.snmpproxy.v1.GetSessionInfoRequestH\x00R\x0egetSessionInfo\x12H\n" +
+	"\rupdate_target\x18\x14 \x01(\v2!.snmpproxy.v1.UpdateTargetRequestH\x00R\fupdateTarget\x12?\n" +
+	"\n" +
+	"get_config\x18\x15 \x01(\v2\x1e.snmpproxy.v1.GetConfigRequestH\x00R\tgetConfig\x12?\n" +
+	"\n" +
+	"set_config\x18\x16 \x01(\v2\x1e.snmpproxy.v1.SetConfigRequestH\x00R\tsetConfig\x129\n" +
 	"\tauth_resp\x182 \x01(\v2\x1a.snmpproxy.v1.AuthResponseH\x00R\bauthResp\x12B\n" +
 	"\fmonitor_resp\x183 \x01(\v2\x1d.snmpproxy.v1.MonitorResponseH\x00R\vmonitorResp\x12H\n" +
 	"\x0eunmonitor_resp\x184 \x01(\v2\x1f.snmpproxy.v1.UnmonitorResponseH\x00R\runmonitorResp\x12O\n" +
@@ -1906,7 +2879,12 @@ const file_snmpproxy_proto_rawDesc = "" +
 	"\x0fget_target_resp\x186 \x01(\v2\x1f.snmpproxy.v1.GetTargetResponseH\x00R\rgetTargetResp\x12L\n" +
 	"\x10get_history_resp\x187 \x01(\v2 .snmpproxy.v1.GetHistoryResponseH\x00R\x0egetHistoryResp\x12H\n" +
 	"\x0esubscribe_resp\x188 \x01(\v2\x1f.snmpproxy.v1.SubscribeResponseH\x00R\rsubscribeResp\x12N\n" +
-	"\x10unsubscribe_resp\x189 \x01(\v2!.snmpproxy.v1.UnsubscribeResponseH\x00R\x0funsubscribeResp\x12.\n" +
+	"\x10unsubscribe_resp\x189 \x01(\v2!.snmpproxy.v1.UnsubscribeResponseH\x00R\x0funsubscribeResp\x12\\\n" +
+	"\x16get_server_status_resp\x18: \x01(\v2%.snmpproxy.v1.GetServerStatusResponseH\x00R\x13getServerStatusResp\x12Y\n" +
+	"\x15get_session_info_resp\x18; \x01(\v2$.snmpproxy.v1.GetSessionInfoResponseH\x00R\x12getSessionInfoResp\x12R\n" +
+	"\x12update_target_resp\x18< \x01(\v2\".snmpproxy.v1.UpdateTargetResponseH\x00R\x10updateTargetResp\x12I\n" +
+	"\x0fget_config_resp\x18= \x01(\v2\x1f.snmpproxy.v1.GetConfigResponseH\x00R\rgetConfigResp\x12I\n" +
+	"\x0fset_config_resp\x18> \x01(\v2\x1f.snmpproxy.v1.SetConfigResponseH\x00R\rsetConfigResp\x12.\n" +
 	"\x06sample\x18P \x01(\v2\x14.snmpproxy.v1.SampleH\x00R\x06sample\x12+\n" +
 	"\x05error\x18c \x01(\v2\x13.snmpproxy.v1.ErrorH\x00R\x05errorB\t\n" +
 	"\apayload\"5\n" +
@@ -1938,7 +2916,7 @@ const file_snmpproxy_proto_rawDesc = "" +
 	"\n" +
 	"timeout_ms\x18\x03 \x01(\rR\ttimeoutMs\x12\x18\n" +
 	"\aretries\x18\x04 \x01(\rR\aretriesB\t\n" +
-	"\aversion\"\xb8\x02\n" +
+	"\aversion\"\xa5\x04\n" +
 	"\x06Target\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04host\x18\x02 \x01(\tR\x04host\x12\x12\n" +
@@ -1955,7 +2933,15 @@ const file_snmpproxy_proto_rawDesc = "" +
 	"\n" +
 	"last_error\x18\f \x01(\tR\tlastError\x12 \n" +
 	"\vsubscribers\x18\r \x01(\x05R\vsubscribers\x12)\n" +
-	"\x10samples_buffered\x18\x0e \x01(\x05R\x0fsamplesBuffered\"#\n" +
+	"\x10samples_buffered\x18\x0e \x01(\x05R\x0fsamplesBuffered\x12\"\n" +
+	"\rcreated_at_ms\x18\x14 \x01(\x03R\vcreatedAtMs\x12\x1f\n" +
+	"\vpolls_total\x18\x15 \x01(\x03R\n" +
+	"pollsTotal\x12#\n" +
+	"\rpolls_success\x18\x16 \x01(\x03R\fpollsSuccess\x12!\n" +
+	"\fpolls_failed\x18\x17 \x01(\x03R\vpollsFailed\x12\x1e\n" +
+	"\vavg_poll_ms\x18\x18 \x01(\x05R\tavgPollMs\x12\x1e\n" +
+	"\vmin_poll_ms\x18\x19 \x01(\x05R\tminPollMs\x12\x1e\n" +
+	"\vmax_poll_ms\x18\x1a \x01(\x05R\tmaxPollMs\"#\n" +
 	"\vAuthRequest\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\"W\n" +
 	"\fAuthResponse\x12\x0e\n" +
@@ -2009,7 +2995,68 @@ const file_snmpproxy_proto_rawDesc = "" +
 	"\n" +
 	"target_ids\x18\x01 \x03(\tR\ttargetIds\"%\n" +
 	"\x13UnsubscribeResponse\x12\x0e\n" +
-	"\x02ok\x18\x01 \x01(\bR\x02ok*\xc3\x01\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok\"\x18\n" +
+	"\x16GetServerStatusRequest\"\xdb\x04\n" +
+	"\x17GetServerStatusResponse\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\tR\aversion\x12\x1b\n" +
+	"\tuptime_ms\x18\x02 \x01(\x03R\buptimeMs\x12\"\n" +
+	"\rstarted_at_ms\x18\x03 \x01(\x03R\vstartedAtMs\x12'\n" +
+	"\x0fsessions_active\x18\n" +
+	" \x01(\x05R\x0esessionsActive\x12#\n" +
+	"\rsessions_lost\x18\v \x01(\x05R\fsessionsLost\x12#\n" +
+	"\rtargets_total\x18\x14 \x01(\x05R\ftargetsTotal\x12'\n" +
+	"\x0ftargets_polling\x18\x15 \x01(\x05R\x0etargetsPolling\x12/\n" +
+	"\x13targets_unreachable\x18\x16 \x01(\x05R\x12targetsUnreachable\x12%\n" +
+	"\x0epoller_workers\x18\x1e \x01(\x05R\rpollerWorkers\x12*\n" +
+	"\x11poller_queue_used\x18\x1f \x01(\x05R\x0fpollerQueueUsed\x122\n" +
+	"\x15poller_queue_capacity\x18  \x01(\x05R\x13pollerQueueCapacity\x12(\n" +
+	"\x10poller_heap_size\x18! \x01(\x05R\x0epollerHeapSize\x12\x1f\n" +
+	"\vpolls_total\x18( \x01(\x03R\n" +
+	"pollsTotal\x12#\n" +
+	"\rpolls_success\x18) \x01(\x03R\fpollsSuccess\x12!\n" +
+	"\fpolls_failed\x18* \x01(\x03R\vpollsFailed\"\x17\n" +
+	"\x15GetSessionInfoRequest\"\xf2\x01\n" +
+	"\x16GetSessionInfoResponse\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x19\n" +
+	"\btoken_id\x18\x02 \x01(\tR\atokenId\x12\"\n" +
+	"\rcreated_at_ms\x18\x03 \x01(\x03R\vcreatedAtMs\x12&\n" +
+	"\x0fconnected_at_ms\x18\x04 \x01(\x03R\rconnectedAtMs\x12#\n" +
+	"\rowned_targets\x18\n" +
+	" \x03(\tR\fownedTargets\x12-\n" +
+	"\x12subscribed_targets\x18\v \x03(\tR\x11subscribedTargets\"\x8c\x01\n" +
+	"\x13UpdateTargetRequest\x12\x1b\n" +
+	"\ttarget_id\x18\x01 \x01(\tR\btargetId\x12\x1f\n" +
+	"\vinterval_ms\x18\x02 \x01(\rR\n" +
+	"intervalMs\x12\x1d\n" +
+	"\n" +
+	"timeout_ms\x18\x03 \x01(\rR\ttimeoutMs\x12\x18\n" +
+	"\aretries\x18\x04 \x01(\rR\aretries\"n\n" +
+	"\x14UpdateTargetResponse\x12\x0e\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok\x12,\n" +
+	"\x06target\x18\x02 \x01(\v2\x14.snmpproxy.v1.TargetR\x06target\x12\x18\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"\x12\n" +
+	"\x10GetConfigRequest\"H\n" +
+	"\x11GetConfigResponse\x123\n" +
+	"\x06config\x18\x01 \x01(\v2\x1b.snmpproxy.v1.RuntimeConfigR\x06config\"\xc1\x01\n" +
+	"\x10SetConfigRequest\x12,\n" +
+	"\x12default_timeout_ms\x18\x01 \x01(\rR\x10defaultTimeoutMs\x12'\n" +
+	"\x0fdefault_retries\x18\x02 \x01(\rR\x0edefaultRetries\x12.\n" +
+	"\x13default_buffer_size\x18\x03 \x01(\rR\x11defaultBufferSize\x12&\n" +
+	"\x0fmin_interval_ms\x18\x04 \x01(\rR\rminIntervalMs\"r\n" +
+	"\x11SetConfigResponse\x12\x0e\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok\x123\n" +
+	"\x06config\x18\x02 \x01(\v2\x1b.snmpproxy.v1.RuntimeConfigR\x06config\x12\x18\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"\xc3\x02\n" +
+	"\rRuntimeConfig\x12,\n" +
+	"\x12default_timeout_ms\x18\x01 \x01(\rR\x10defaultTimeoutMs\x12'\n" +
+	"\x0fdefault_retries\x18\x02 \x01(\rR\x0edefaultRetries\x12.\n" +
+	"\x13default_buffer_size\x18\x03 \x01(\rR\x11defaultBufferSize\x12&\n" +
+	"\x0fmin_interval_ms\x18\x04 \x01(\rR\rminIntervalMs\x12%\n" +
+	"\x0epoller_workers\x18\n" +
+	" \x01(\x05R\rpollerWorkers\x12*\n" +
+	"\x11poller_queue_size\x18\v \x01(\x05R\x0fpollerQueueSize\x120\n" +
+	"\x14reconnect_window_sec\x18\f \x01(\rR\x12reconnectWindowSec*\xc3\x01\n" +
 	"\fAuthProtocol\x12\x1d\n" +
 	"\x19AUTH_PROTOCOL_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11AUTH_PROTOCOL_MD5\x10\x01\x12\x15\n" +
@@ -2043,35 +3090,46 @@ func file_snmpproxy_proto_rawDescGZIP() []byte {
 }
 
 var file_snmpproxy_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_snmpproxy_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
+var file_snmpproxy_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
 var file_snmpproxy_proto_goTypes = []any{
-	(AuthProtocol)(0),           // 0: snmpproxy.v1.AuthProtocol
-	(PrivProtocol)(0),           // 1: snmpproxy.v1.PrivProtocol
-	(SecurityLevel)(0),          // 2: snmpproxy.v1.SecurityLevel
-	(*Envelope)(nil),            // 3: snmpproxy.v1.Envelope
-	(*Error)(nil),               // 4: snmpproxy.v1.Error
-	(*Sample)(nil),              // 5: snmpproxy.v1.Sample
-	(*SNMPv2C)(nil),             // 6: snmpproxy.v1.SNMPv2c
-	(*SNMPv3)(nil),              // 7: snmpproxy.v1.SNMPv3
-	(*SNMPConfig)(nil),          // 8: snmpproxy.v1.SNMPConfig
-	(*Target)(nil),              // 9: snmpproxy.v1.Target
-	(*AuthRequest)(nil),         // 10: snmpproxy.v1.AuthRequest
-	(*AuthResponse)(nil),        // 11: snmpproxy.v1.AuthResponse
-	(*MonitorRequest)(nil),      // 12: snmpproxy.v1.MonitorRequest
-	(*MonitorResponse)(nil),     // 13: snmpproxy.v1.MonitorResponse
-	(*UnmonitorRequest)(nil),    // 14: snmpproxy.v1.UnmonitorRequest
-	(*UnmonitorResponse)(nil),   // 15: snmpproxy.v1.UnmonitorResponse
-	(*ListTargetsRequest)(nil),  // 16: snmpproxy.v1.ListTargetsRequest
-	(*ListTargetsResponse)(nil), // 17: snmpproxy.v1.ListTargetsResponse
-	(*GetTargetRequest)(nil),    // 18: snmpproxy.v1.GetTargetRequest
-	(*GetTargetResponse)(nil),   // 19: snmpproxy.v1.GetTargetResponse
-	(*GetHistoryRequest)(nil),   // 20: snmpproxy.v1.GetHistoryRequest
-	(*GetHistoryResponse)(nil),  // 21: snmpproxy.v1.GetHistoryResponse
-	(*TargetHistory)(nil),       // 22: snmpproxy.v1.TargetHistory
-	(*SubscribeRequest)(nil),    // 23: snmpproxy.v1.SubscribeRequest
-	(*SubscribeResponse)(nil),   // 24: snmpproxy.v1.SubscribeResponse
-	(*UnsubscribeRequest)(nil),  // 25: snmpproxy.v1.UnsubscribeRequest
-	(*UnsubscribeResponse)(nil), // 26: snmpproxy.v1.UnsubscribeResponse
+	(AuthProtocol)(0),               // 0: snmpproxy.v1.AuthProtocol
+	(PrivProtocol)(0),               // 1: snmpproxy.v1.PrivProtocol
+	(SecurityLevel)(0),              // 2: snmpproxy.v1.SecurityLevel
+	(*Envelope)(nil),                // 3: snmpproxy.v1.Envelope
+	(*Error)(nil),                   // 4: snmpproxy.v1.Error
+	(*Sample)(nil),                  // 5: snmpproxy.v1.Sample
+	(*SNMPv2C)(nil),                 // 6: snmpproxy.v1.SNMPv2c
+	(*SNMPv3)(nil),                  // 7: snmpproxy.v1.SNMPv3
+	(*SNMPConfig)(nil),              // 8: snmpproxy.v1.SNMPConfig
+	(*Target)(nil),                  // 9: snmpproxy.v1.Target
+	(*AuthRequest)(nil),             // 10: snmpproxy.v1.AuthRequest
+	(*AuthResponse)(nil),            // 11: snmpproxy.v1.AuthResponse
+	(*MonitorRequest)(nil),          // 12: snmpproxy.v1.MonitorRequest
+	(*MonitorResponse)(nil),         // 13: snmpproxy.v1.MonitorResponse
+	(*UnmonitorRequest)(nil),        // 14: snmpproxy.v1.UnmonitorRequest
+	(*UnmonitorResponse)(nil),       // 15: snmpproxy.v1.UnmonitorResponse
+	(*ListTargetsRequest)(nil),      // 16: snmpproxy.v1.ListTargetsRequest
+	(*ListTargetsResponse)(nil),     // 17: snmpproxy.v1.ListTargetsResponse
+	(*GetTargetRequest)(nil),        // 18: snmpproxy.v1.GetTargetRequest
+	(*GetTargetResponse)(nil),       // 19: snmpproxy.v1.GetTargetResponse
+	(*GetHistoryRequest)(nil),       // 20: snmpproxy.v1.GetHistoryRequest
+	(*GetHistoryResponse)(nil),      // 21: snmpproxy.v1.GetHistoryResponse
+	(*TargetHistory)(nil),           // 22: snmpproxy.v1.TargetHistory
+	(*SubscribeRequest)(nil),        // 23: snmpproxy.v1.SubscribeRequest
+	(*SubscribeResponse)(nil),       // 24: snmpproxy.v1.SubscribeResponse
+	(*UnsubscribeRequest)(nil),      // 25: snmpproxy.v1.UnsubscribeRequest
+	(*UnsubscribeResponse)(nil),     // 26: snmpproxy.v1.UnsubscribeResponse
+	(*GetServerStatusRequest)(nil),  // 27: snmpproxy.v1.GetServerStatusRequest
+	(*GetServerStatusResponse)(nil), // 28: snmpproxy.v1.GetServerStatusResponse
+	(*GetSessionInfoRequest)(nil),   // 29: snmpproxy.v1.GetSessionInfoRequest
+	(*GetSessionInfoResponse)(nil),  // 30: snmpproxy.v1.GetSessionInfoResponse
+	(*UpdateTargetRequest)(nil),     // 31: snmpproxy.v1.UpdateTargetRequest
+	(*UpdateTargetResponse)(nil),    // 32: snmpproxy.v1.UpdateTargetResponse
+	(*GetConfigRequest)(nil),        // 33: snmpproxy.v1.GetConfigRequest
+	(*GetConfigResponse)(nil),       // 34: snmpproxy.v1.GetConfigResponse
+	(*SetConfigRequest)(nil),        // 35: snmpproxy.v1.SetConfigRequest
+	(*SetConfigResponse)(nil),       // 36: snmpproxy.v1.SetConfigResponse
+	(*RuntimeConfig)(nil),           // 37: snmpproxy.v1.RuntimeConfig
 }
 var file_snmpproxy_proto_depIdxs = []int32{
 	10, // 0: snmpproxy.v1.Envelope.auth:type_name -> snmpproxy.v1.AuthRequest
@@ -2082,31 +3140,44 @@ var file_snmpproxy_proto_depIdxs = []int32{
 	20, // 5: snmpproxy.v1.Envelope.get_history:type_name -> snmpproxy.v1.GetHistoryRequest
 	23, // 6: snmpproxy.v1.Envelope.subscribe:type_name -> snmpproxy.v1.SubscribeRequest
 	25, // 7: snmpproxy.v1.Envelope.unsubscribe:type_name -> snmpproxy.v1.UnsubscribeRequest
-	11, // 8: snmpproxy.v1.Envelope.auth_resp:type_name -> snmpproxy.v1.AuthResponse
-	13, // 9: snmpproxy.v1.Envelope.monitor_resp:type_name -> snmpproxy.v1.MonitorResponse
-	15, // 10: snmpproxy.v1.Envelope.unmonitor_resp:type_name -> snmpproxy.v1.UnmonitorResponse
-	17, // 11: snmpproxy.v1.Envelope.list_targets_resp:type_name -> snmpproxy.v1.ListTargetsResponse
-	19, // 12: snmpproxy.v1.Envelope.get_target_resp:type_name -> snmpproxy.v1.GetTargetResponse
-	21, // 13: snmpproxy.v1.Envelope.get_history_resp:type_name -> snmpproxy.v1.GetHistoryResponse
-	24, // 14: snmpproxy.v1.Envelope.subscribe_resp:type_name -> snmpproxy.v1.SubscribeResponse
-	26, // 15: snmpproxy.v1.Envelope.unsubscribe_resp:type_name -> snmpproxy.v1.UnsubscribeResponse
-	5,  // 16: snmpproxy.v1.Envelope.sample:type_name -> snmpproxy.v1.Sample
-	4,  // 17: snmpproxy.v1.Envelope.error:type_name -> snmpproxy.v1.Error
-	2,  // 18: snmpproxy.v1.SNMPv3.security_level:type_name -> snmpproxy.v1.SecurityLevel
-	0,  // 19: snmpproxy.v1.SNMPv3.auth_protocol:type_name -> snmpproxy.v1.AuthProtocol
-	1,  // 20: snmpproxy.v1.SNMPv3.priv_protocol:type_name -> snmpproxy.v1.PrivProtocol
-	6,  // 21: snmpproxy.v1.SNMPConfig.v2c:type_name -> snmpproxy.v1.SNMPv2c
-	7,  // 22: snmpproxy.v1.SNMPConfig.v3:type_name -> snmpproxy.v1.SNMPv3
-	8,  // 23: snmpproxy.v1.MonitorRequest.snmp:type_name -> snmpproxy.v1.SNMPConfig
-	9,  // 24: snmpproxy.v1.ListTargetsResponse.targets:type_name -> snmpproxy.v1.Target
-	9,  // 25: snmpproxy.v1.GetTargetResponse.target:type_name -> snmpproxy.v1.Target
-	22, // 26: snmpproxy.v1.GetHistoryResponse.history:type_name -> snmpproxy.v1.TargetHistory
-	5,  // 27: snmpproxy.v1.TargetHistory.samples:type_name -> snmpproxy.v1.Sample
-	28, // [28:28] is the sub-list for method output_type
-	28, // [28:28] is the sub-list for method input_type
-	28, // [28:28] is the sub-list for extension type_name
-	28, // [28:28] is the sub-list for extension extendee
-	0,  // [0:28] is the sub-list for field type_name
+	27, // 8: snmpproxy.v1.Envelope.get_server_status:type_name -> snmpproxy.v1.GetServerStatusRequest
+	29, // 9: snmpproxy.v1.Envelope.get_session_info:type_name -> snmpproxy.v1.GetSessionInfoRequest
+	31, // 10: snmpproxy.v1.Envelope.update_target:type_name -> snmpproxy.v1.UpdateTargetRequest
+	33, // 11: snmpproxy.v1.Envelope.get_config:type_name -> snmpproxy.v1.GetConfigRequest
+	35, // 12: snmpproxy.v1.Envelope.set_config:type_name -> snmpproxy.v1.SetConfigRequest
+	11, // 13: snmpproxy.v1.Envelope.auth_resp:type_name -> snmpproxy.v1.AuthResponse
+	13, // 14: snmpproxy.v1.Envelope.monitor_resp:type_name -> snmpproxy.v1.MonitorResponse
+	15, // 15: snmpproxy.v1.Envelope.unmonitor_resp:type_name -> snmpproxy.v1.UnmonitorResponse
+	17, // 16: snmpproxy.v1.Envelope.list_targets_resp:type_name -> snmpproxy.v1.ListTargetsResponse
+	19, // 17: snmpproxy.v1.Envelope.get_target_resp:type_name -> snmpproxy.v1.GetTargetResponse
+	21, // 18: snmpproxy.v1.Envelope.get_history_resp:type_name -> snmpproxy.v1.GetHistoryResponse
+	24, // 19: snmpproxy.v1.Envelope.subscribe_resp:type_name -> snmpproxy.v1.SubscribeResponse
+	26, // 20: snmpproxy.v1.Envelope.unsubscribe_resp:type_name -> snmpproxy.v1.UnsubscribeResponse
+	28, // 21: snmpproxy.v1.Envelope.get_server_status_resp:type_name -> snmpproxy.v1.GetServerStatusResponse
+	30, // 22: snmpproxy.v1.Envelope.get_session_info_resp:type_name -> snmpproxy.v1.GetSessionInfoResponse
+	32, // 23: snmpproxy.v1.Envelope.update_target_resp:type_name -> snmpproxy.v1.UpdateTargetResponse
+	34, // 24: snmpproxy.v1.Envelope.get_config_resp:type_name -> snmpproxy.v1.GetConfigResponse
+	36, // 25: snmpproxy.v1.Envelope.set_config_resp:type_name -> snmpproxy.v1.SetConfigResponse
+	5,  // 26: snmpproxy.v1.Envelope.sample:type_name -> snmpproxy.v1.Sample
+	4,  // 27: snmpproxy.v1.Envelope.error:type_name -> snmpproxy.v1.Error
+	2,  // 28: snmpproxy.v1.SNMPv3.security_level:type_name -> snmpproxy.v1.SecurityLevel
+	0,  // 29: snmpproxy.v1.SNMPv3.auth_protocol:type_name -> snmpproxy.v1.AuthProtocol
+	1,  // 30: snmpproxy.v1.SNMPv3.priv_protocol:type_name -> snmpproxy.v1.PrivProtocol
+	6,  // 31: snmpproxy.v1.SNMPConfig.v2c:type_name -> snmpproxy.v1.SNMPv2c
+	7,  // 32: snmpproxy.v1.SNMPConfig.v3:type_name -> snmpproxy.v1.SNMPv3
+	8,  // 33: snmpproxy.v1.MonitorRequest.snmp:type_name -> snmpproxy.v1.SNMPConfig
+	9,  // 34: snmpproxy.v1.ListTargetsResponse.targets:type_name -> snmpproxy.v1.Target
+	9,  // 35: snmpproxy.v1.GetTargetResponse.target:type_name -> snmpproxy.v1.Target
+	22, // 36: snmpproxy.v1.GetHistoryResponse.history:type_name -> snmpproxy.v1.TargetHistory
+	5,  // 37: snmpproxy.v1.TargetHistory.samples:type_name -> snmpproxy.v1.Sample
+	9,  // 38: snmpproxy.v1.UpdateTargetResponse.target:type_name -> snmpproxy.v1.Target
+	37, // 39: snmpproxy.v1.GetConfigResponse.config:type_name -> snmpproxy.v1.RuntimeConfig
+	37, // 40: snmpproxy.v1.SetConfigResponse.config:type_name -> snmpproxy.v1.RuntimeConfig
+	41, // [41:41] is the sub-list for method output_type
+	41, // [41:41] is the sub-list for method input_type
+	41, // [41:41] is the sub-list for extension type_name
+	41, // [41:41] is the sub-list for extension extendee
+	0,  // [0:41] is the sub-list for field type_name
 }
 
 func init() { file_snmpproxy_proto_init() }
@@ -2123,6 +3194,11 @@ func file_snmpproxy_proto_init() {
 		(*Envelope_GetHistory)(nil),
 		(*Envelope_Subscribe)(nil),
 		(*Envelope_Unsubscribe)(nil),
+		(*Envelope_GetServerStatus)(nil),
+		(*Envelope_GetSessionInfo)(nil),
+		(*Envelope_UpdateTarget)(nil),
+		(*Envelope_GetConfig)(nil),
+		(*Envelope_SetConfig)(nil),
 		(*Envelope_AuthResp)(nil),
 		(*Envelope_MonitorResp)(nil),
 		(*Envelope_UnmonitorResp)(nil),
@@ -2131,6 +3207,11 @@ func file_snmpproxy_proto_init() {
 		(*Envelope_GetHistoryResp)(nil),
 		(*Envelope_SubscribeResp)(nil),
 		(*Envelope_UnsubscribeResp)(nil),
+		(*Envelope_GetServerStatusResp)(nil),
+		(*Envelope_GetSessionInfoResp)(nil),
+		(*Envelope_UpdateTargetResp)(nil),
+		(*Envelope_GetConfigResp)(nil),
+		(*Envelope_SetConfigResp)(nil),
 		(*Envelope_Sample)(nil),
 		(*Envelope_Error)(nil),
 	}
@@ -2144,7 +3225,7 @@ func file_snmpproxy_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_snmpproxy_proto_rawDesc), len(file_snmpproxy_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   24,
+			NumMessages:   35,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

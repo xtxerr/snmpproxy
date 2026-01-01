@@ -755,10 +755,11 @@ func (srv *Server) handleUpdateTarget(sess *Session, id uint64, req *pb.UpdateTa
 	}
 
 	var changed bool
+	var newIntervalMs uint32
 
-	// Update interval
-	if req.IntervalMs != nil {
-		newInterval := *req.IntervalMs
+	// Update interval (0 = not set)
+	if req.GetIntervalMs() > 0 {
+		newInterval := req.GetIntervalMs()
 
 		srv.runtimeMu.RLock()
 		minInterval := srv.minIntervalMs
@@ -773,24 +774,25 @@ func (srv *Server) handleUpdateTarget(sess *Session, id uint64, req *pb.UpdateTa
 		}
 
 		t.IntervalMs = newInterval
+		newIntervalMs = newInterval
 		changed = true
 	}
 
-	// Update timeout
-	if req.TimeoutMs != nil {
+	// Update timeout (0 = not set)
+	if req.GetTimeoutMs() > 0 {
 		if t.SNMP == nil {
 			t.SNMP = &pb.SNMPConfig{}
 		}
-		t.SNMP.TimeoutMs = *req.TimeoutMs
+		t.SNMP.TimeoutMs = req.GetTimeoutMs()
 		changed = true
 	}
 
-	// Update retries
-	if req.Retries != nil {
+	// Update retries (0 = not set, use special value for "set to 0")
+	if req.GetRetries() > 0 {
 		if t.SNMP == nil {
 			t.SNMP = &pb.SNMPConfig{}
 		}
-		t.SNMP.Retries = *req.Retries
+		t.SNMP.Retries = req.GetRetries()
 		changed = true
 	}
 
@@ -799,8 +801,8 @@ func (srv *Server) handleUpdateTarget(sess *Session, id uint64, req *pb.UpdateTa
 	srv.mu.Unlock()
 
 	// Update scheduler if interval changed
-	if req.IntervalMs != nil {
-		srv.poller.UpdateInterval(req.TargetId, *req.IntervalMs)
+	if newIntervalMs > 0 {
+		srv.poller.UpdateInterval(req.TargetId, newIntervalMs)
 	}
 
 	msg := "no changes"
@@ -844,17 +846,18 @@ func (srv *Server) handleGetConfig(sess *Session, id uint64) {
 func (srv *Server) handleSetConfig(sess *Session, id uint64, req *pb.SetConfigRequest) {
 	srv.runtimeMu.Lock()
 
-	if req.DefaultTimeoutMs != nil {
-		srv.defaultTimeoutMs = *req.DefaultTimeoutMs
+	// Use getter methods - 0 means "not set"
+	if req.GetDefaultTimeoutMs() > 0 {
+		srv.defaultTimeoutMs = req.GetDefaultTimeoutMs()
 	}
-	if req.DefaultRetries != nil {
-		srv.defaultRetries = *req.DefaultRetries
+	if req.GetDefaultRetries() > 0 {
+		srv.defaultRetries = req.GetDefaultRetries()
 	}
-	if req.DefaultBufferSize != nil {
-		srv.defaultBufferSize = *req.DefaultBufferSize
+	if req.GetDefaultBufferSize() > 0 {
+		srv.defaultBufferSize = req.GetDefaultBufferSize()
 	}
-	if req.MinIntervalMs != nil {
-		srv.minIntervalMs = *req.MinIntervalMs
+	if req.GetMinIntervalMs() > 0 {
+		srv.minIntervalMs = req.GetMinIntervalMs()
 	}
 
 	cfg := &pb.RuntimeConfig{

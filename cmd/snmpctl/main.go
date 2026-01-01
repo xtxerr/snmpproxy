@@ -655,24 +655,21 @@ func cmdUpdate(args []string) {
 			if i+1 < len(args) {
 				i++
 				if v, err := strconv.ParseUint(args[i], 10, 32); err == nil {
-					val := uint32(v)
-					req.IntervalMs = &val
+					req.IntervalMs = uint32(v)
 				}
 			}
 		case "-t", "--timeout":
 			if i+1 < len(args) {
 				i++
 				if v, err := strconv.ParseUint(args[i], 10, 32); err == nil {
-					val := uint32(v)
-					req.TimeoutMs = &val
+					req.TimeoutMs = uint32(v)
 				}
 			}
 		case "-r", "--retries":
 			if i+1 < len(args) {
 				i++
 				if v, err := strconv.ParseUint(args[i], 10, 32); err == nil {
-					val := uint32(v)
-					req.Retries = &val
+					req.Retries = uint32(v)
 				}
 			}
 		}
@@ -732,13 +729,13 @@ func cmdConfigSet(key, value string) {
 	req := &pb.SetConfigRequest{}
 	switch key {
 	case "timeout", "default_timeout_ms":
-		req.DefaultTimeoutMs = &val
+		req.DefaultTimeoutMs = val
 	case "retries", "default_retries":
-		req.DefaultRetries = &val
+		req.DefaultRetries = val
 	case "buffer", "default_buffer_size":
-		req.DefaultBufferSize = &val
+		req.DefaultBufferSize = val
 	case "min-interval", "min_interval_ms":
-		req.MinIntervalMs = &val
+		req.MinIntervalMs = val
 	default:
 		fmt.Printf("Unknown config key: %s\n", key)
 		fmt.Println("Valid keys: timeout, retries, buffer, min-interval")
