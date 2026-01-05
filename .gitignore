@@ -1,0 +1,10 @@
+bin/
+gen/
+internal/proto/snmpproxy.pb.go
+certs/
+config.yaml
+*.log
+.idea/
+.vscode/
+*.swp
+.DS_Store

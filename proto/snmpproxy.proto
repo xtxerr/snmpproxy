@@ -1,0 +1,362 @@
+syntax = "proto3";
+
+package snmpproxy.v1;
+
+option go_package = "github.com/xtxerr/snmpproxy/internal/proto";
+
+// ============================================================================
+// Envelope - Wire format wrapper for all messages
+// ============================================================================
+
+message Envelope {
+  uint64 id = 1;  // Request/Response correlation. Push messages use id=0.
+  
+  oneof payload {
+    // Client → Server
+    AuthRequest auth = 10;
+    MonitorRequest monitor = 11;
+    UnmonitorRequest unmonitor = 12;
+    ListTargetsRequest list_targets = 13;
+    GetTargetRequest get_target = 14;
+    GetHistoryRequest get_history = 15;
+    SubscribeRequest subscribe = 16;
+    UnsubscribeRequest unsubscribe = 17;
+    
+    // NEW: Status & Config (Client → Server)
+    GetServerStatusRequest get_server_status = 18;
+    GetSessionInfoRequest get_session_info = 19;
+    UpdateTargetRequest update_target = 20;
+    GetConfigRequest get_config = 21;
+    SetConfigRequest set_config = 22;
+    
+    // Server → Client
+    AuthResponse auth_resp = 50;
+    MonitorResponse monitor_resp = 51;
+    UnmonitorResponse unmonitor_resp = 52;
+    ListTargetsResponse list_targets_resp = 53;
+    GetTargetResponse get_target_resp = 54;
+    GetHistoryResponse get_history_resp = 55;
+    SubscribeResponse subscribe_resp = 56;
+    UnsubscribeResponse unsubscribe_resp = 57;
+    
+    // NEW: Status & Config (Server → Client)
+    GetServerStatusResponse get_server_status_resp = 58;
+    GetSessionInfoResponse get_session_info_resp = 59;
+    UpdateTargetResponse update_target_resp = 60;
+    GetConfigResponse get_config_resp = 61;
+    SetConfigResponse set_config_resp = 62;
+    
+    // Server → Client (Push, id=0)
+    Sample sample = 80;
+    
+    // Server → Client (Error response)
+    Error error = 99;
+  }
+}
+
+// ============================================================================
+// Common Types
+// ============================================================================
+
+message Error {
+  int32 code = 1;
+  string message = 2;
+}
+
+message Sample {
+  string target_id = 1;
+  int64 timestamp_ms = 2;
+  uint64 counter = 3;
+  string text = 4;
+  bool valid = 5;
+  string error = 6;
+  int32 poll_ms = 7;
+}
+
+// ============================================================================
+// SNMP Configuration
+// ============================================================================
+
+message SNMPv2c {
+  string community = 1;
+}
+
+enum AuthProtocol {
+  AUTH_PROTOCOL_UNSPECIFIED = 0;
+  AUTH_PROTOCOL_MD5 = 1;
+  AUTH_PROTOCOL_SHA = 2;
+  AUTH_PROTOCOL_SHA224 = 3;
+  AUTH_PROTOCOL_SHA256 = 4;
+  AUTH_PROTOCOL_SHA384 = 5;
+  AUTH_PROTOCOL_SHA512 = 6;
+}
+
+enum PrivProtocol {
+  PRIV_PROTOCOL_UNSPECIFIED = 0;
+  PRIV_PROTOCOL_DES = 1;
+  PRIV_PROTOCOL_AES = 2;
+  PRIV_PROTOCOL_AES192 = 3;
+  PRIV_PROTOCOL_AES256 = 4;
+}
+
+enum SecurityLevel {
+  SECURITY_LEVEL_UNSPECIFIED = 0;
+  SECURITY_LEVEL_NO_AUTH_NO_PRIV = 1;
+  SECURITY_LEVEL_AUTH_NO_PRIV = 2;
+  SECURITY_LEVEL_AUTH_PRIV = 3;
+}
+
+message SNMPv3 {
+  string security_name = 1;
+  SecurityLevel security_level = 2;
+  
+  // Auth (required if security_level >= AUTH_NO_PRIV)
+  AuthProtocol auth_protocol = 3;
+  string auth_password = 4;
+  
+  // Priv (required if security_level == AUTH_PRIV)
+  PrivProtocol priv_protocol = 5;
+  string priv_password = 6;
+  
+  // Optional context
+  string context_name = 7;
+}
+
+message SNMPConfig {
+  oneof version {
+    SNMPv2c v2c = 1;
+    SNMPv3 v3 = 2;
+  }
+  uint32 timeout_ms = 3;
+  uint32 retries = 4;
+}
+
+// ============================================================================
+// Target
+// ============================================================================
+
+message Target {
+  string id = 1;
+  string host = 2;
+  uint32 port = 3;
+  string oid = 4;
+  uint32 interval_ms = 5;
+  uint32 buffer_size = 6;
+  
+  // Runtime state
+  string state = 10;          // "polling", "unreachable", "error"
+  int64 last_poll_ms = 11;
+  string last_error = 12;
+  int32 subscribers = 13;
+  int32 samples_buffered = 14;
+  
+  // NEW: Extended statistics
+  int64 created_at_ms = 20;
+  int64 polls_total = 21;
+  int64 polls_success = 22;
+  int64 polls_failed = 23;
+  int32 avg_poll_ms = 24;
+  int32 min_poll_ms = 25;
+  int32 max_poll_ms = 26;
+}
+
+// ============================================================================
+// Authentication
+// ============================================================================
+
+message AuthRequest {
+  string token = 1;
+}
+
+message AuthResponse {
+  bool ok = 1;
+  string session_id = 2;
+  string message = 3;
+}
+
+// ============================================================================
+// Monitor / Unmonitor
+// ============================================================================
+
+message MonitorRequest {
+  string host = 1;
+  uint32 port = 2;            // Default: 161
+  string oid = 3;
+  uint32 interval_ms = 4;     // Default: 1000
+  uint32 buffer_size = 5;     // Default: 3600
+  SNMPConfig snmp = 6;
+}
+
+message MonitorResponse {
+  string target_id = 1;
+  bool created = 2;           // true if new, false if joined existing
+}
+
+message UnmonitorRequest {
+  string target_id = 1;
+}
+
+message UnmonitorResponse {
+  bool ok = 1;
+}
+
+// ============================================================================
+// List / Get Targets
+// ============================================================================
+
+message ListTargetsRequest {
+  string filter_host = 1;     // Optional filter
+}
+
+message ListTargetsResponse {
+  repeated Target targets = 1;
+}
+
+message GetTargetRequest {
+  string target_id = 1;
+}
+
+message GetTargetResponse {
+  Target target = 1;
+}
+
+// ============================================================================
+// History
+// ============================================================================
+
+message GetHistoryRequest {
+  repeated string target_ids = 1;
+  uint32 last_n = 2;          // Number of samples (default: 100)
+}
+
+message GetHistoryResponse {
+  repeated TargetHistory history = 1;
+}
+
+message TargetHistory {
+  string target_id = 1;
+  repeated Sample samples = 2;
+}
+
+// ============================================================================
+// Subscribe / Unsubscribe
+// ============================================================================
+
+message SubscribeRequest {
+  repeated string target_ids = 1;
+}
+
+message SubscribeResponse {
+  bool ok = 1;
+  repeated string subscribed = 2;
+}
+
+message UnsubscribeRequest {
+  repeated string target_ids = 1;  // Empty = unsubscribe all
+}
+
+message UnsubscribeResponse {
+  bool ok = 1;
+}
+
+// ============================================================================
+// NEW: Server Status
+// ============================================================================
+
+message GetServerStatusRequest {}
+
+message GetServerStatusResponse {
+  // General
+  string version = 1;
+  int64 uptime_ms = 2;
+  int64 started_at_ms = 3;
+  
+  // Sessions
+  int32 sessions_active = 10;
+  int32 sessions_lost = 11;
+  
+  // Targets
+  int32 targets_total = 20;
+  int32 targets_polling = 21;
+  int32 targets_unreachable = 22;
+  
+  // Poller
+  int32 poller_workers = 30;
+  int32 poller_queue_used = 31;
+  int32 poller_queue_capacity = 32;
+  int32 poller_heap_size = 33;
+  
+  // Statistics (since start)
+  int64 polls_total = 40;
+  int64 polls_success = 41;
+  int64 polls_failed = 42;
+}
+
+// ============================================================================
+// NEW: Session Info
+// ============================================================================
+
+message GetSessionInfoRequest {}
+
+message GetSessionInfoResponse {
+  string session_id = 1;
+  string token_id = 2;
+  int64 created_at_ms = 3;
+  int64 connected_at_ms = 4;
+  repeated string owned_targets = 10;
+  repeated string subscribed_targets = 11;
+}
+
+// ============================================================================
+// NEW: Update Target
+// ============================================================================
+
+message UpdateTargetRequest {
+  string target_id = 1;
+  uint32 interval_ms = 2;   // 0 = don't change
+  uint32 timeout_ms = 3;    // 0 = don't change
+  uint32 retries = 4;       // 0 = don't change
+  uint32 buffer_size = 5;   // 0 = don't change
+}
+
+message UpdateTargetResponse {
+  bool ok = 1;
+  Target target = 2;
+  string message = 3;
+}
+
+// ============================================================================
+// NEW: Runtime Config
+// ============================================================================
+
+message GetConfigRequest {}
+
+message GetConfigResponse {
+  RuntimeConfig config = 1;
+}
+
+message SetConfigRequest {
+  uint32 default_timeout_ms = 1;   // 0 = don't change
+  uint32 default_retries = 2;      // 0 = don't change
+  uint32 default_buffer_size = 3;  // 0 = don't change
+  uint32 min_interval_ms = 4;      // 0 = don't change
+}
+
+message SetConfigResponse {
+  bool ok = 1;
+  RuntimeConfig config = 2;
+  string message = 3;
+}
+
+message RuntimeConfig {
+  // Changeable at runtime
+  uint32 default_timeout_ms = 1;
+  uint32 default_retries = 2;
+  uint32 default_buffer_size = 3;
+  uint32 min_interval_ms = 4;
+  
+  // Read-only (set at startup)
+  int32 poller_workers = 10;
+  int32 poller_queue_size = 11;
+  uint32 reconnect_window_sec = 12;
+}
