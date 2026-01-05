@@ -15,19 +15,28 @@ import (
 type Target struct {
 	mu sync.RWMutex
 
-	ID         string
-	Host       string
-	Port       uint16
-	OID        string
+	// Identity
+	ID          string
+	Description string
+	Tags        []string
+	Persistent  bool
+	Protocol    string // "snmp", future: "http", "icmp"
+
+	// SNMP-specific config
+	Host string
+	Port uint16
+	OID  string
+	SNMP *pb.SNMPTargetConfig
+
+	// Polling config
 	IntervalMs uint32
-	SNMP       *pb.SNMPConfig
 
 	// Runtime state
 	State      string // "polling", "unreachable", "error"
 	LastPollMs int64
 	LastError  string
 	ErrCount   int
-	Owners     map[string]bool
+	Owners     map[string]bool // sessionID -> true, "$config" for config targets
 
 	// Statistics
 	CreatedAt   time.Time
@@ -55,35 +64,46 @@ type Sample struct {
 	PollMs      int32
 }
 
-// NewTarget creates a new target.
-func NewTarget(id string, req *pb.MonitorRequest, defaultBufSize uint32) *Target {
-	port := uint16(req.Port)
-	if port == 0 {
-		port = 161
+// NewTarget creates a new target from a CreateTargetRequest.
+func NewTarget(id string, req *pb.CreateTargetRequest, defaultBufSize uint32) *Target {
+	t := &Target{
+		ID:          id,
+		Description: req.Description,
+		Tags:        req.Tags,
+		Persistent:  req.Persistent,
+		State:       "polling",
+		Owners:      make(map[string]bool),
+		CreatedAt:   time.Now(),
+		PollMsMin:   -1, // -1 = not set
 	}
-	interval := req.IntervalMs
-	if interval == 0 {
-		interval = 1000
+
+	// Interval
+	t.IntervalMs = req.IntervalMs
+	if t.IntervalMs == 0 {
+		t.IntervalMs = 1000
 	}
+
+	// Buffer size
 	bufSize := int(req.BufferSize)
 	if bufSize == 0 {
 		bufSize = int(defaultBufSize)
 	}
+	t.bufSize = bufSize
+	t.buffer = make([]Sample, bufSize)
 
-	return &Target{
-		ID:         id,
-		Host:       req.Host,
-		Port:       port,
-		OID:        req.Oid,
-		IntervalMs: interval,
-		SNMP:       req.Snmp,
-		State:      "polling",
-		Owners:     make(map[string]bool),
-		CreatedAt:  time.Now(),
-		PollMsMin:  -1, // -1 = not set
-		buffer:     make([]Sample, bufSize),
-		bufSize:    bufSize,
+	// Protocol-specific config
+	if snmpCfg := req.GetSnmp(); snmpCfg != nil {
+		t.Protocol = "snmp"
+		t.Host = snmpCfg.Host
+		t.Port = uint16(snmpCfg.Port)
+		if t.Port == 0 {
+			t.Port = 161
+		}
+		t.OID = snmpCfg.Oid
+		t.SNMP = snmpCfg
 	}
+
+	return t
 }
 
 // Key returns the deduplication key.
@@ -128,6 +148,13 @@ func (t *Target) OwnerCount() int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return len(t.Owners)
+}
+
+// IsConfigTarget returns true if this target was loaded from config.
+func (t *Target) IsConfigTarget() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.Owners["$config"]
 }
 
 // WriteSample adds a sample to the ring buffer and updates stats.
@@ -229,15 +256,18 @@ func (t *Target) ResizeBuffer(newSize int) {
 	}
 }
 
-// ToProto converts to protobuf Target (acquires lock).
+// BufferSize returns the current buffer size.
+func (t *Target) BufferSize() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.bufSize
+}
+
+// ToProto converts to protobuf Target.
 func (t *Target) ToProto() *pb.Target {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return t.toProtoLocked()
-}
 
-// toProtoLocked converts to protobuf Target (caller must hold lock).
-func (t *Target) toProtoLocked() *pb.Target {
 	var avgPollMs int32
 	if t.PollsTotal > 0 {
 		avgPollMs = int32(t.PollMsTotal / t.PollsTotal)
@@ -248,27 +278,34 @@ func (t *Target) toProtoLocked() *pb.Target {
 		minPollMs = 0
 	}
 
-	return &pb.Target{
+	target := &pb.Target{
 		Id:              t.ID,
-		Host:            t.Host,
-		Port:            uint32(t.Port),
-		Oid:             t.OID,
+		Description:     t.Description,
+		Tags:            t.Tags,
+		Persistent:      t.Persistent,
+		Protocol:        t.Protocol,
 		IntervalMs:      t.IntervalMs,
 		BufferSize:      uint32(t.bufSize),
 		State:           t.State,
 		LastPollMs:      t.LastPollMs,
 		LastError:       t.LastError,
-		Subscribers:     int32(len(t.Owners)),
 		SamplesBuffered: int32(t.count),
-		// Extended stats
-		CreatedAtMs:  t.CreatedAt.UnixMilli(),
-		PollsTotal:   t.PollsTotal,
-		PollsSuccess: t.PollsOK,
-		PollsFailed:  t.PollsFailed,
-		AvgPollMs:    avgPollMs,
-		MinPollMs:    minPollMs,
-		MaxPollMs:    t.PollMsMax,
+		Subscribers:     int32(len(t.Owners)),
+		CreatedAtMs:     t.CreatedAt.UnixMilli(),
+		PollsTotal:      t.PollsTotal,
+		PollsSuccess:    t.PollsOK,
+		PollsFailed:     t.PollsFailed,
+		AvgPollMs:       avgPollMs,
+		MinPollMs:       minPollMs,
+		MaxPollMs:       t.PollMsMax,
 	}
+
+	// Add protocol-specific config
+	if t.SNMP != nil {
+		target.ProtocolConfig = &pb.Target_Snmp{Snmp: t.SNMP}
+	}
+
+	return target
 }
 
 // ============================================================================
@@ -589,11 +626,11 @@ func (p *Poller) poll(targetID string) PollResult {
 			snmp.ContextName = v3.ContextName
 
 			switch v3.SecurityLevel {
-			case pb.SecurityLevel_SECURITY_LEVEL_NO_AUTH_NO_PRIV:
+			case "noAuthNoPriv":
 				snmp.MsgFlags = gosnmp.NoAuthNoPriv
-			case pb.SecurityLevel_SECURITY_LEVEL_AUTH_NO_PRIV:
+			case "authNoPriv":
 				snmp.MsgFlags = gosnmp.AuthNoPriv
-			case pb.SecurityLevel_SECURITY_LEVEL_AUTH_PRIV:
+			case "authPriv":
 				snmp.MsgFlags = gosnmp.AuthPriv
 			default:
 				snmp.MsgFlags = gosnmp.AuthPriv
@@ -725,34 +762,34 @@ func (p *Poller) dispatchSample(r PollResult) {
 	}
 }
 
-func mapAuthProtocol(p pb.AuthProtocol) gosnmp.SnmpV3AuthProtocol {
+func mapAuthProtocol(p string) gosnmp.SnmpV3AuthProtocol {
 	switch p {
-	case pb.AuthProtocol_AUTH_PROTOCOL_MD5:
+	case "MD5":
 		return gosnmp.MD5
-	case pb.AuthProtocol_AUTH_PROTOCOL_SHA:
+	case "SHA", "SHA1":
 		return gosnmp.SHA
-	case pb.AuthProtocol_AUTH_PROTOCOL_SHA224:
+	case "SHA224":
 		return gosnmp.SHA224
-	case pb.AuthProtocol_AUTH_PROTOCOL_SHA256:
+	case "SHA256":
 		return gosnmp.SHA256
-	case pb.AuthProtocol_AUTH_PROTOCOL_SHA384:
+	case "SHA384":
 		return gosnmp.SHA384
-	case pb.AuthProtocol_AUTH_PROTOCOL_SHA512:
+	case "SHA512":
 		return gosnmp.SHA512
 	default:
 		return gosnmp.NoAuth
 	}
 }
 
-func mapPrivProtocol(p pb.PrivProtocol) gosnmp.SnmpV3PrivProtocol {
+func mapPrivProtocol(p string) gosnmp.SnmpV3PrivProtocol {
 	switch p {
-	case pb.PrivProtocol_PRIV_PROTOCOL_DES:
+	case "DES":
 		return gosnmp.DES
-	case pb.PrivProtocol_PRIV_PROTOCOL_AES:
+	case "AES", "AES128":
 		return gosnmp.AES
-	case pb.PrivProtocol_PRIV_PROTOCOL_AES192:
+	case "AES192":
 		return gosnmp.AES192
-	case pb.PrivProtocol_PRIV_PROTOCOL_AES256:
+	case "AES256":
 		return gosnmp.AES256
 	default:
 		return gosnmp.NoPriv

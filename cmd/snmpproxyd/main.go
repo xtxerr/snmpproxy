@@ -38,7 +38,7 @@ func main() {
 
 	// CLI overrides
 	if *listen != "" {
-		cfg.Listen = *listen
+		cfg.Server.Listen = *listen
 	}
 	if *noTLS {
 		cfg.TLS.CertFile = ""
@@ -53,9 +53,9 @@ func main() {
 
 	// Token from flag or env
 	if *token != "" {
-		cfg.Auth.Tokens = []config.Token{{ID: "cli", Token: *token}}
+		cfg.Auth.Tokens = []config.TokenConfig{{ID: "cli", Token: *token}}
 	} else if envToken := os.Getenv("SNMPPROXY_TOKEN"); envToken != "" && len(cfg.Auth.Tokens) == 0 {
-		cfg.Auth.Tokens = []config.Token{{ID: "env", Token: envToken}}
+		cfg.Auth.Tokens = []config.TokenConfig{{ID: "env", Token: envToken}}
 	}
 
 	// Validate

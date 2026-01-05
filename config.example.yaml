@@ -1,6 +1,7 @@
 # snmpproxyd configuration
 
-listen: "0.0.0.0:9161"
+server:
+  listen: "0.0.0.0:9161"
 
 tls:
   cert_file: "certs/server.crt"
@@ -11,15 +12,63 @@ auth:
     - id: admin
       token: "${SNMPPROXY_TOKEN:-changeme}"
 
-snmp:
-  timeout_ms: 5000
-  retries: 2
-  buffer_size: 3600
+session:
+  auth_timeout_sec: 30
+  reconnect_window_sec: 600
 
 poller:
   workers: 100
   queue_size: 10000
 
-session:
-  auth_timeout_sec: 30
-  reconnect_window_sec: 600
+# SNMP defaults for new targets
+snmp:
+  timeout_ms: 5000
+  retries: 2
+  buffer_size: 3600
+
+# Predefined targets (loaded on startup, implicitly persistent)
+targets:
+  # SNMPv2c example
+  - id: router-wan-in
+    description: "Main Router - WAN Interface Inbound Traffic"
+    tags:
+      - type/network/router
+      - location/dc1/rack15
+      - criticality/high
+    interval_ms: 1000
+    snmp:
+      host: "192.168.1.1"
+      port: 161
+      oid: "1.3.6.1.2.1.31.1.1.1.6.1"
+      community: "public"
+
+  - id: router-wan-out
+    description: "Main Router - WAN Interface Outbound Traffic"
+    tags:
+      - type/network/router
+      - location/dc1/rack15
+      - criticality/high
+    interval_ms: 1000
+    snmp:
+      host: "192.168.1.1"
+      port: 161
+      oid: "1.3.6.1.2.1.31.1.1.1.10.1"
+      community: "public"
+
+  # SNMPv3 example
+  - id: core-switch-uptime
+    description: "Core Switch - System Uptime"
+    tags:
+      - type/network/switch
+      - location/dc1
+    interval_ms: 60000
+    snmp:
+      host: "192.168.1.2"
+      oid: "1.3.6.1.2.1.1.3.0"
+      version: 3
+      security_name: "monitor"
+      security_level: "authPriv"
+      auth_protocol: "SHA256"
+      auth_password: "${SNMP_AUTH_PASS}"
+      priv_protocol: "AES"
+      priv_password: "${SNMP_PRIV_PASS}"

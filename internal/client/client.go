@@ -75,10 +75,8 @@ func (c *Client) Connect() error {
 
 	// Send auth
 	if err := c.wire.Write(&pb.Envelope{
-		Id: 1,
-		Payload: &pb.Envelope_Auth{
-			Auth: &pb.AuthRequest{Token: c.token},
-		},
+		Id:      1,
+		Payload: &pb.Envelope_AuthReq{AuthReq: &pb.AuthRequest{Token: c.token}},
 	}); err != nil {
 		conn.Close()
 		return fmt.Errorf("send auth: %w", err)
@@ -201,125 +199,48 @@ func (c *Client) request(env *pb.Envelope) (*pb.Envelope, error) {
 	}
 }
 
-// Monitor starts monitoring a target.
-func (c *Client) Monitor(req *pb.MonitorRequest) (*pb.MonitorResponse, error) {
+// ============================================================================
+// Browse
+// ============================================================================
+
+// Browse navigates the virtual filesystem.
+func (c *Client) Browse(path string, longFormat bool) (*pb.BrowseResponse, error) {
+	return c.BrowseWithOptions(&pb.BrowseRequest{
+		Path:       path,
+		LongFormat: longFormat,
+	})
+}
+
+// BrowseWithOptions navigates with full options.
+func (c *Client) BrowseWithOptions(req *pb.BrowseRequest) (*pb.BrowseResponse, error) {
 	resp, err := c.request(&pb.Envelope{
-		Payload: &pb.Envelope_Monitor{Monitor: req},
+		Payload: &pb.Envelope_BrowseReq{BrowseReq: req},
 	})
 	if err != nil {
 		return nil, err
 	}
-	return resp.GetMonitorResp(), nil
-}
-
-// Unmonitor stops monitoring a target.
-func (c *Client) Unmonitor(targetID string) error {
-	_, err := c.request(&pb.Envelope{
-		Payload: &pb.Envelope_Unmonitor{
-			Unmonitor: &pb.UnmonitorRequest{TargetId: targetID},
-		},
-	})
-	return err
-}
-
-// ListTargets lists all targets.
-func (c *Client) ListTargets(filterHost string) ([]*pb.Target, error) {
-	resp, err := c.request(&pb.Envelope{
-		Payload: &pb.Envelope_ListTargets{
-			ListTargets: &pb.ListTargetsRequest{FilterHost: filterHost},
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	return resp.GetListTargetsResp().GetTargets(), nil
-}
-
-// GetTarget gets target info.
-func (c *Client) GetTarget(targetID string) (*pb.Target, error) {
-	resp, err := c.request(&pb.Envelope{
-		Payload: &pb.Envelope_GetTarget{
-			GetTarget: &pb.GetTargetRequest{TargetId: targetID},
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	return resp.GetGetTargetResp().GetTarget(), nil
-}
-
-// GetHistory gets historical samples.
-func (c *Client) GetHistory(targetIDs []string, lastN uint32) ([]*pb.TargetHistory, error) {
-	resp, err := c.request(&pb.Envelope{
-		Payload: &pb.Envelope_GetHistory{
-			GetHistory: &pb.GetHistoryRequest{TargetIds: targetIDs, LastN: lastN},
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	return resp.GetGetHistoryResp().GetHistory(), nil
-}
-
-// Subscribe subscribes to live samples.
-func (c *Client) Subscribe(targetIDs []string) ([]string, error) {
-	resp, err := c.request(&pb.Envelope{
-		Payload: &pb.Envelope_Subscribe{
-			Subscribe: &pb.SubscribeRequest{TargetIds: targetIDs},
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	return resp.GetSubscribeResp().GetSubscribed(), nil
-}
-
-// Unsubscribe unsubscribes from live samples.
-func (c *Client) Unsubscribe(targetIDs []string) error {
-	_, err := c.request(&pb.Envelope{
-		Payload: &pb.Envelope_Unsubscribe{
-			Unsubscribe: &pb.UnsubscribeRequest{TargetIds: targetIDs},
-		},
-	})
-	return err
+	return resp.GetBrowseResp(), nil
 }
 
 // ============================================================================
-// NEW: Status, Session, Update, Config
+// Target CRUD
 // ============================================================================
 
-// GetServerStatus returns server status information.
-func (c *Client) GetServerStatus() (*pb.GetServerStatusResponse, error) {
+// CreateTarget creates a new target.
+func (c *Client) CreateTarget(req *pb.CreateTargetRequest) (*pb.CreateTargetResponse, error) {
 	resp, err := c.request(&pb.Envelope{
-		Payload: &pb.Envelope_GetServerStatus{
-			GetServerStatus: &pb.GetServerStatusRequest{},
-		},
+		Payload: &pb.Envelope_CreateTargetReq{CreateTargetReq: req},
 	})
 	if err != nil {
 		return nil, err
 	}
-	return resp.GetGetServerStatusResp(), nil
+	return resp.GetCreateTargetResp(), nil
 }
 
-// GetSessionInfo returns information about the current session.
-func (c *Client) GetSessionInfo() (*pb.GetSessionInfoResponse, error) {
-	resp, err := c.request(&pb.Envelope{
-		Payload: &pb.Envelope_GetSessionInfo{
-			GetSessionInfo: &pb.GetSessionInfoRequest{},
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	return resp.GetGetSessionInfoResp(), nil
-}
-
-// UpdateTarget updates target settings (interval, timeout, retries).
+// UpdateTarget updates a target.
 func (c *Client) UpdateTarget(req *pb.UpdateTargetRequest) (*pb.UpdateTargetResponse, error) {
 	resp, err := c.request(&pb.Envelope{
-		Payload: &pb.Envelope_UpdateTarget{
-			UpdateTarget: req,
-		},
+		Payload: &pb.Envelope_UpdateTargetReq{UpdateTargetReq: req},
 	})
 	if err != nil {
 		return nil, err
@@ -327,12 +248,89 @@ func (c *Client) UpdateTarget(req *pb.UpdateTargetRequest) (*pb.UpdateTargetResp
 	return resp.GetUpdateTargetResp(), nil
 }
 
+// DeleteTarget deletes a target.
+func (c *Client) DeleteTarget(targetID string, force bool) (*pb.DeleteTargetResponse, error) {
+	resp, err := c.request(&pb.Envelope{
+		Payload: &pb.Envelope_DeleteTargetReq{
+			DeleteTargetReq: &pb.DeleteTargetRequest{
+				TargetId: targetID,
+				Force:    force,
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetDeleteTargetResp(), nil
+}
+
+// ============================================================================
+// History
+// ============================================================================
+
+// GetHistory gets historical samples for a target.
+func (c *Client) GetHistory(targetID string, lastN uint32) (*pb.GetHistoryResponse, error) {
+	resp, err := c.request(&pb.Envelope{
+		Payload: &pb.Envelope_GetHistoryReq{
+			GetHistoryReq: &pb.GetHistoryRequest{
+				TargetId: targetID,
+				LastN:    lastN,
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetGetHistoryResp(), nil
+}
+
+// ============================================================================
+// Subscriptions
+// ============================================================================
+
+// Subscribe subscribes to live samples by target IDs.
+func (c *Client) Subscribe(targetIDs []string) (*pb.SubscribeResponse, error) {
+	return c.SubscribeWithTags(targetIDs, nil)
+}
+
+// SubscribeWithTags subscribes to live samples by target IDs and/or tags.
+func (c *Client) SubscribeWithTags(targetIDs, tags []string) (*pb.SubscribeResponse, error) {
+	resp, err := c.request(&pb.Envelope{
+		Payload: &pb.Envelope_SubscribeReq{
+			SubscribeReq: &pb.SubscribeRequest{
+				TargetIds: targetIDs,
+				Tags:      tags,
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetSubscribeResp(), nil
+}
+
+// Unsubscribe unsubscribes from live samples.
+// Empty targetIDs means unsubscribe from all.
+func (c *Client) Unsubscribe(targetIDs []string) (*pb.UnsubscribeResponse, error) {
+	resp, err := c.request(&pb.Envelope{
+		Payload: &pb.Envelope_UnsubscribeReq{
+			UnsubscribeReq: &pb.UnsubscribeRequest{TargetIds: targetIDs},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetUnsubscribeResp(), nil
+}
+
+// ============================================================================
+// Config
+// ============================================================================
+
 // GetConfig returns the current runtime configuration.
 func (c *Client) GetConfig() (*pb.RuntimeConfig, error) {
 	resp, err := c.request(&pb.Envelope{
-		Payload: &pb.Envelope_GetConfig{
-			GetConfig: &pb.GetConfigRequest{},
-		},
+		Payload: &pb.Envelope_GetConfigReq{GetConfigReq: &pb.GetConfigRequest{}},
 	})
 	if err != nil {
 		return nil, err
@@ -343,9 +341,7 @@ func (c *Client) GetConfig() (*pb.RuntimeConfig, error) {
 // SetConfig updates the runtime configuration.
 func (c *Client) SetConfig(req *pb.SetConfigRequest) (*pb.SetConfigResponse, error) {
 	resp, err := c.request(&pb.Envelope{
-		Payload: &pb.Envelope_SetConfig{
-			SetConfig: req,
-		},
+		Payload: &pb.Envelope_SetConfigReq{SetConfigReq: req},
 	})
 	if err != nil {
 		return nil, err

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,14 +19,15 @@ import (
 	"github.com/xtxerr/snmpproxy/internal/wire"
 )
 
-// Version is set at build time via ldflags
+// Version is set at build time via ldflags.
 var Version = "dev"
 
 // Server is the SNMP proxy server.
 type Server struct {
-	cfg      *config.Server
+	cfg      *config.Config
 	listener net.Listener
 	poller   *Poller
+	tagIndex *TagIndex
 
 	mu          sync.RWMutex
 	sessions    map[string]*Session
@@ -59,7 +61,7 @@ type Session struct {
 	CreatedAt time.Time
 	LostAt    *time.Time
 
-	subscriptions map[string]bool // Targets für die diese Session Live-Updates will
+	subscriptions map[string]bool
 	sendCh        chan *pb.Envelope
 }
 
@@ -76,7 +78,7 @@ func NewSession(id, tokenID string, conn net.Conn, w *wire.Conn) *Session {
 	}
 }
 
-// Subscribe adds a target subscription (for live updates).
+// Subscribe adds a target subscription.
 func (s *Session) Subscribe(targetID string) {
 	s.mu.Lock()
 	s.subscriptions[targetID] = true
@@ -102,7 +104,7 @@ func (s *Session) UnsubscribeAll() []string {
 	return ids
 }
 
-// IsSubscribed checks if subscribed to a target (for live updates).
+// IsSubscribed checks if subscribed to a target.
 func (s *Session) IsSubscribed(targetID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -120,7 +122,7 @@ func (s *Session) GetSubscriptions() []string {
 	return ids
 }
 
-// Send queues an envelope for sending (non-blocking).
+// Send queues an envelope for sending.
 func (s *Session) Send(env *pb.Envelope) bool {
 	select {
 	case s.sendCh <- env:
@@ -162,24 +164,25 @@ func (s *Session) Close() {
 }
 
 // New creates a new server.
-func New(cfg *config.Server) *Server {
+func New(cfg *config.Config) *Server {
 	srv := &Server{
 		cfg:               cfg,
 		sessions:          make(map[string]*Session),
 		targets:           make(map[string]*Target),
 		targetIndex:       make(map[string]string),
+		tagIndex:          NewTagIndex(),
 		shutdown:          make(chan struct{}),
 		startedAt:         time.Now(),
 		defaultTimeoutMs:  cfg.SNMP.TimeoutMs,
 		defaultRetries:    cfg.SNMP.Retries,
 		defaultBufferSize: cfg.SNMP.BufferSize,
-		minIntervalMs:     100, // Default minimum 100ms
+		minIntervalMs:     100,
 	}
 	srv.poller = NewPoller(srv, cfg.Poller.Workers, cfg.Poller.QueueSize)
 	return srv
 }
 
-// Run starts the server (blocking).
+// Run starts the server.
 func (srv *Server) Run() error {
 	var ln net.Listener
 	var err error
@@ -193,20 +196,24 @@ func (srv *Server) Run() error {
 			Certificates: []tls.Certificate{cert},
 			MinVersion:   tls.VersionTLS12,
 		}
-		ln, err = tls.Listen("tcp", srv.cfg.Listen, tlsCfg)
+		ln, err = tls.Listen("tcp", srv.cfg.Server.Listen, tlsCfg)
 		if err != nil {
 			return fmt.Errorf("TLS listen: %w", err)
 		}
-		log.Printf("Listening on %s (TLS)", srv.cfg.Listen)
+		log.Printf("Listening on %s (TLS)", srv.cfg.Server.Listen)
 	} else {
-		ln, err = net.Listen("tcp", srv.cfg.Listen)
+		ln, err = net.Listen("tcp", srv.cfg.Server.Listen)
 		if err != nil {
 			return fmt.Errorf("listen: %w", err)
 		}
-		log.Printf("Listening on %s (no TLS)", srv.cfg.Listen)
+		log.Printf("Listening on %s (no TLS)", srv.cfg.Server.Listen)
 	}
 
 	srv.listener = ln
+
+	// Load config targets
+	srv.loadConfigTargets()
+
 	srv.poller.Start()
 	go srv.cleanup()
 
@@ -223,6 +230,100 @@ func (srv *Server) Run() error {
 		}
 		go srv.handleConn(conn)
 	}
+}
+
+// loadConfigTargets loads targets defined in the config file.
+func (srv *Server) loadConfigTargets() {
+	for _, tc := range srv.cfg.Targets {
+		t := srv.createTargetFromConfig(&tc)
+		if t == nil {
+			continue
+		}
+
+		srv.targets[t.ID] = t
+		srv.targetIndex[t.Key()] = t.ID
+		srv.tagIndex.Add(t.ID, t.Tags)
+		srv.poller.AddTarget(t.ID, t.IntervalMs)
+
+		log.Printf("Loaded config target: %s (%s)", t.ID, t.Key())
+	}
+}
+
+// createTargetFromConfig creates a Target from a config.TargetConfig.
+func (srv *Server) createTargetFromConfig(tc *config.TargetConfig) *Target {
+	t := &Target{
+		ID:          tc.ID,
+		Description: tc.Description,
+		Tags:        tc.Tags,
+		Persistent:  true, // Config targets are always persistent
+		State:       "polling",
+		Owners:      map[string]bool{"$config": true},
+		CreatedAt:   time.Now(),
+		PollMsMin:   -1,
+	}
+
+	// Interval
+	t.IntervalMs = tc.IntervalMs
+	if t.IntervalMs == 0 {
+		t.IntervalMs = 1000
+	}
+
+	// Buffer size
+	bufSize := int(tc.BufferSize)
+	if bufSize == 0 {
+		bufSize = int(srv.cfg.SNMP.BufferSize)
+	}
+	t.bufSize = bufSize
+	t.buffer = make([]Sample, bufSize)
+
+	// SNMP config
+	if tc.SNMP != nil {
+		t.Protocol = "snmp"
+		t.Host = tc.SNMP.Host
+		t.Port = tc.SNMP.Port
+		if t.Port == 0 {
+			t.Port = 161
+		}
+		t.OID = tc.SNMP.OID
+		t.SNMP = srv.snmpConfigToProto(tc.SNMP)
+	}
+
+	return t
+}
+
+// snmpConfigToProto converts config.SNMPTargetConfig to pb.SNMPTargetConfig.
+func (srv *Server) snmpConfigToProto(c *config.SNMPTargetConfig) *pb.SNMPTargetConfig {
+	cfg := &pb.SNMPTargetConfig{
+		Host:      c.Host,
+		Port:      uint32(c.Port),
+		Oid:       c.OID,
+		TimeoutMs: c.TimeoutMs,
+		Retries:   c.Retries,
+	}
+
+	if c.IsV3() {
+		cfg.Version = &pb.SNMPTargetConfig_V3{
+			V3: &pb.SNMPv3Config{
+				SecurityName:  c.SecurityName,
+				SecurityLevel: c.SecurityLevel,
+				AuthProtocol:  c.AuthProtocol,
+				AuthPassword:  c.AuthPassword,
+				PrivProtocol:  c.PrivProtocol,
+				PrivPassword:  c.PrivPassword,
+				ContextName:   c.ContextName,
+			},
+		}
+	} else {
+		community := c.Community
+		if community == "" {
+			community = "public"
+		}
+		cfg.Version = &pb.SNMPTargetConfig_V2C{
+			V2C: &pb.SNMPv2CConfig{Community: community},
+		}
+	}
+
+	return cfg
 }
 
 // Shutdown stops the server.
@@ -265,7 +366,7 @@ func (srv *Server) handleConn(conn net.Conn) {
 		return
 	}
 
-	auth := env.GetAuth()
+	auth := env.GetAuthReq()
 	if auth == nil {
 		w.Write(wire.NewError(env.Id, wire.ErrNotAuthenticated, "first message must be auth"))
 		conn.Close()
@@ -275,10 +376,8 @@ func (srv *Server) handleConn(conn net.Conn) {
 	tokenID, ok := srv.validateToken(auth.Token)
 	if !ok {
 		w.Write(&pb.Envelope{
-			Id: env.Id,
-			Payload: &pb.Envelope_AuthResp{
-				AuthResp: &pb.AuthResponse{Ok: false, Message: "invalid token"},
-			},
+			Id:      env.Id,
+			Payload: &pb.Envelope_AuthResp{AuthResp: &pb.AuthResponse{Ok: false, Message: "invalid token"}},
 		})
 		conn.Close()
 		log.Printf("Auth failed from %s", remote)
@@ -300,18 +399,14 @@ func (srv *Server) handleConn(conn net.Conn) {
 	}
 
 	// Send auth response
-	authResp := &pb.Envelope{
-		Id: env.Id,
-		Payload: &pb.Envelope_AuthResp{
-			AuthResp: &pb.AuthResponse{Ok: true, SessionId: sess.ID},
-		},
-	}
-	if err := w.Write(authResp); err != nil {
+	if err := w.Write(&pb.Envelope{
+		Id:      env.Id,
+		Payload: &pb.Envelope_AuthResp{AuthResp: &pb.AuthResponse{Ok: true, SessionId: sess.ID}},
+	}); err != nil {
 		log.Printf("Failed to send auth response to %s: %v", remote, err)
 		conn.Close()
 		return
 	}
-	log.Printf("Sent auth response to %s", remote)
 
 	// Start writer
 	done := make(chan struct{})
@@ -341,314 +436,249 @@ func (srv *Server) handleConn(conn net.Conn) {
 
 func (srv *Server) handle(sess *Session, env *pb.Envelope) {
 	switch p := env.Payload.(type) {
-	case *pb.Envelope_Monitor:
-		srv.handleMonitor(sess, env.Id, p.Monitor)
-	case *pb.Envelope_Unmonitor:
-		srv.handleUnmonitor(sess, env.Id, p.Unmonitor)
-	case *pb.Envelope_ListTargets:
-		srv.handleListTargets(sess, env.Id, p.ListTargets)
-	case *pb.Envelope_GetTarget:
-		srv.handleGetTarget(sess, env.Id, p.GetTarget)
-	case *pb.Envelope_GetHistory:
-		srv.handleGetHistory(sess, env.Id, p.GetHistory)
-	case *pb.Envelope_Subscribe:
-		srv.handleSubscribe(sess, env.Id, p.Subscribe)
-	case *pb.Envelope_Unsubscribe:
-		srv.handleUnsubscribe(sess, env.Id, p.Unsubscribe)
-	// NEW handlers
-	case *pb.Envelope_GetServerStatus:
-		srv.handleGetServerStatus(sess, env.Id)
-	case *pb.Envelope_GetSessionInfo:
-		srv.handleGetSessionInfo(sess, env.Id)
-	case *pb.Envelope_UpdateTarget:
-		srv.handleUpdateTarget(sess, env.Id, p.UpdateTarget)
-	case *pb.Envelope_GetConfig:
+	case *pb.Envelope_BrowseReq:
+		srv.handleBrowse(sess, env.Id, p.BrowseReq)
+	case *pb.Envelope_CreateTargetReq:
+		srv.handleCreateTarget(sess, env.Id, p.CreateTargetReq)
+	case *pb.Envelope_UpdateTargetReq:
+		srv.handleUpdateTarget(sess, env.Id, p.UpdateTargetReq)
+	case *pb.Envelope_DeleteTargetReq:
+		srv.handleDeleteTarget(sess, env.Id, p.DeleteTargetReq)
+	case *pb.Envelope_GetHistoryReq:
+		srv.handleGetHistory(sess, env.Id, p.GetHistoryReq)
+	case *pb.Envelope_SubscribeReq:
+		srv.handleSubscribe(sess, env.Id, p.SubscribeReq)
+	case *pb.Envelope_UnsubscribeReq:
+		srv.handleUnsubscribe(sess, env.Id, p.UnsubscribeReq)
+	case *pb.Envelope_GetConfigReq:
 		srv.handleGetConfig(sess, env.Id)
-	case *pb.Envelope_SetConfig:
-		srv.handleSetConfig(sess, env.Id, p.SetConfig)
+	case *pb.Envelope_SetConfigReq:
+		srv.handleSetConfig(sess, env.Id, p.SetConfigReq)
 	default:
 		sess.Send(wire.NewError(env.Id, wire.ErrInvalidRequest, "unknown request"))
 	}
 }
 
-func (srv *Server) handleMonitor(sess *Session, id uint64, req *pb.MonitorRequest) {
-	if req.Host == "" || req.Oid == "" {
-		sess.Send(wire.NewError(id, wire.ErrInvalidRequest, "host and oid required"))
-		return
+// ============================================================================
+// Browse Handler
+// ============================================================================
+
+func (srv *Server) handleBrowse(sess *Session, id uint64, req *pb.BrowseRequest) {
+	path := strings.Trim(req.Path, "/")
+	parts := strings.Split(path, "/")
+	if path == "" {
+		parts = nil
 	}
 
-	// Validate SNMP config
-	if err := validateSNMPConfig(req.Snmp); err != nil {
+	var resp *pb.BrowseResponse
+	var err error
+
+	if len(parts) == 0 {
+		resp = srv.browseRoot()
+	} else {
+		switch parts[0] {
+		case "targets":
+			resp, err = srv.browseTargets(parts[1:], req)
+		case "server":
+			resp, err = srv.browseServer(parts[1:])
+		case "session":
+			resp, err = srv.browseSession(sess, parts[1:])
+		default:
+			err = fmt.Errorf("unknown path: %s", parts[0])
+		}
+	}
+
+	if err != nil {
 		sess.Send(wire.NewError(id, wire.ErrInvalidRequest, err.Error()))
 		return
 	}
 
-	// Check minimum interval
-	srv.runtimeMu.RLock()
-	minInterval := srv.minIntervalMs
-	srv.runtimeMu.RUnlock()
+	sess.Send(&pb.Envelope{Id: id, Payload: &pb.Envelope_BrowseResp{BrowseResp: resp}})
+}
 
-	if req.IntervalMs > 0 && req.IntervalMs < minInterval {
-		sess.Send(wire.NewError(id, wire.ErrInvalidRequest,
-			fmt.Sprintf("interval_ms must be >= %d", minInterval)))
-		return
+func (srv *Server) browseRoot() *pb.BrowseResponse {
+	srv.mu.RLock()
+	targetCount := int32(len(srv.targets))
+	srv.mu.RUnlock()
+
+	return &pb.BrowseResponse{
+		Path: "/",
+		Nodes: []*pb.BrowseNode{
+			{Name: "targets", Type: pb.NodeType_NODE_DIRECTORY, TargetCount: targetCount},
+			{Name: "server", Type: pb.NodeType_NODE_DIRECTORY},
+			{Name: "session", Type: pb.NodeType_NODE_DIRECTORY},
+		},
+	}
+}
+
+func (srv *Server) browseTargets(parts []string, req *pb.BrowseRequest) (*pb.BrowseResponse, error) {
+	srv.mu.RLock()
+	defer srv.mu.RUnlock()
+
+	if len(parts) == 0 {
+		// /targets - show tag root categories + "all"
+		dirs := srv.tagIndex.GetRootCategories()
+		nodes := make([]*pb.BrowseNode, 0, len(dirs)+1)
+
+		for _, dir := range dirs {
+			nodes = append(nodes, &pb.BrowseNode{
+				Name:        dir,
+				Type:        pb.NodeType_NODE_DIRECTORY,
+				TargetCount: int32(srv.tagIndex.Count(dir)),
+			})
+		}
+
+		nodes = append(nodes, &pb.BrowseNode{
+			Name:        "all",
+			Type:        pb.NodeType_NODE_DIRECTORY,
+			TargetCount: int32(len(srv.targets)),
+		})
+
+		return &pb.BrowseResponse{Path: "targets", Nodes: nodes}, nil
 	}
 
-	port := uint16(req.Port)
-	if port == 0 {
-		port = 161
+	// /targets/all
+	if parts[0] == "all" {
+		if len(parts) == 1 {
+			return srv.browseAllTargets(req)
+		}
+		// /targets/all/<target-id>
+		return srv.browseSingleTarget(parts[1])
 	}
-	key := fmt.Sprintf("%s:%d/%s", req.Host, port, req.Oid)
 
-	srv.mu.Lock()
+	// Try as direct target ID first (single segment)
+	if len(parts) == 1 {
+		if t, ok := srv.targets[parts[0]]; ok {
+			return srv.targetToResponse("targets/"+parts[0], t)
+		}
+	}
 
-	// Check existing
-	if existingID, ok := srv.targetIndex[key]; ok {
-		t := srv.targets[existingID]
-		t.AddOwner(sess.ID)
-		srv.mu.Unlock()
+	// Tag path
+	tagPath := strings.Join(parts, "/")
 
-		sess.Send(&pb.Envelope{
-			Id: id,
-			Payload: &pb.Envelope_MonitorResp{
-				MonitorResp: &pb.MonitorResponse{TargetId: existingID, Created: false},
+	// Check if last segment is a target ID under a tag path
+	if len(parts) > 1 {
+		possibleTargetID := parts[len(parts)-1]
+		if t, ok := srv.targets[possibleTargetID]; ok {
+			parentPath := strings.Join(parts[:len(parts)-1], "/")
+			if srv.tagIndex.HasTag(possibleTargetID, parentPath) {
+				return srv.targetToResponse("targets/"+tagPath, t)
+			}
+		}
+	}
+
+	// List directory contents
+	dirs, targetIDs := srv.tagIndex.ListChildren(tagPath)
+
+	// If no children found, check if it's a leaf tag with targets
+	if len(dirs) == 0 && len(targetIDs) == 0 {
+		targets := srv.tagIndex.Query(tagPath)
+		if len(targets) > 0 {
+			nodes := make([]*pb.BrowseNode, 0, len(targets))
+			for _, tid := range targets {
+				if t, ok := srv.targets[tid]; ok {
+					node := &pb.BrowseNode{Name: tid, Type: pb.NodeType_NODE_TARGET}
+					if req.LongFormat {
+						node.Target = t.ToProto()
+					}
+					nodes = append(nodes, node)
+				}
+			}
+			return &pb.BrowseResponse{Path: "targets/" + tagPath, Nodes: nodes}, nil
+		}
+		return nil, fmt.Errorf("path not found: %s", tagPath)
+	}
+
+	nodes := make([]*pb.BrowseNode, 0, len(dirs)+len(targetIDs))
+
+	for _, dir := range dirs {
+		fullPath := tagPath + "/" + dir
+		nodes = append(nodes, &pb.BrowseNode{
+			Name:        dir,
+			Type:        pb.NodeType_NODE_DIRECTORY,
+			TargetCount: int32(srv.tagIndex.Count(fullPath)),
+		})
+	}
+
+	for _, tid := range targetIDs {
+		if t, ok := srv.targets[tid]; ok {
+			node := &pb.BrowseNode{Name: tid, Type: pb.NodeType_NODE_TARGET}
+			if req.LongFormat {
+				node.Target = t.ToProto()
+			}
+			nodes = append(nodes, node)
+		}
+	}
+
+	return &pb.BrowseResponse{Path: "targets/" + tagPath, Nodes: nodes}, nil
+}
+
+func (srv *Server) browseAllTargets(req *pb.BrowseRequest) (*pb.BrowseResponse, error) {
+	nodes := make([]*pb.BrowseNode, 0, len(srv.targets))
+
+	ids := make([]string, 0, len(srv.targets))
+	for id := range srv.targets {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	for _, id := range ids {
+		t := srv.targets[id]
+		node := &pb.BrowseNode{Name: id, Type: pb.NodeType_NODE_TARGET}
+		if req.LongFormat {
+			node.Target = t.ToProto()
+		}
+		nodes = append(nodes, node)
+	}
+
+	return &pb.BrowseResponse{Path: "targets/all", Nodes: nodes}, nil
+}
+
+func (srv *Server) browseSingleTarget(targetID string) (*pb.BrowseResponse, error) {
+	t, ok := srv.targets[targetID]
+	if !ok {
+		return nil, fmt.Errorf("target not found: %s", targetID)
+	}
+	return srv.targetToResponse("targets/all/"+targetID, t)
+}
+
+func (srv *Server) targetToResponse(path string, t *Target) (*pb.BrowseResponse, error) {
+	return &pb.BrowseResponse{
+		Path: path,
+		Nodes: []*pb.BrowseNode{{
+			Name:   t.ID,
+			Type:   pb.NodeType_NODE_TARGET,
+			Target: t.ToProto(),
+		}},
+	}, nil
+}
+
+func (srv *Server) browseServer(parts []string) (*pb.BrowseResponse, error) {
+	if len(parts) == 0 {
+		return &pb.BrowseResponse{
+			Path: "server",
+			Nodes: []*pb.BrowseNode{
+				{Name: "status", Type: pb.NodeType_NODE_INFO},
+				{Name: "config", Type: pb.NodeType_NODE_INFO},
+				{Name: "sessions", Type: pb.NodeType_NODE_DIRECTORY},
 			},
-		})
-		log.Printf("Session %s joined target %s", sess.ID, existingID)
-		return
+		}, nil
 	}
 
-	// Apply defaults
-	srv.runtimeMu.RLock()
-	if req.BufferSize == 0 {
-		req.BufferSize = srv.defaultBufferSize
+	switch parts[0] {
+	case "status":
+		return srv.browseServerStatus()
+	case "config":
+		return srv.browseServerConfig()
+	case "sessions":
+		return srv.browseServerSessions(parts[1:])
+	default:
+		return nil, fmt.Errorf("unknown server path: %s", parts[0])
 	}
-	srv.runtimeMu.RUnlock()
-
-	// Create new
-	targetID := srv.genID()
-	t := NewTarget(targetID, req, srv.cfg.SNMP.BufferSize)
-	t.AddOwner(sess.ID)
-
-	srv.targets[targetID] = t
-	srv.targetIndex[key] = targetID
-	srv.mu.Unlock()
-
-	// Add to scheduler (outside lock)
-	srv.poller.AddTarget(targetID, t.IntervalMs)
-
-	sess.Send(&pb.Envelope{
-		Id: id,
-		Payload: &pb.Envelope_MonitorResp{
-			MonitorResp: &pb.MonitorResponse{TargetId: targetID, Created: true},
-		},
-	})
-	log.Printf("Session %s created target %s (%s)", sess.ID, targetID, key)
 }
 
-func validateSNMPConfig(cfg *pb.SNMPConfig) error {
-	if cfg == nil {
-		return nil
-	}
-
-	if v3 := cfg.GetV3(); v3 != nil {
-		if v3.SecurityName == "" {
-			return fmt.Errorf("SNMPv3 requires security_name")
-		}
-
-		switch v3.SecurityLevel {
-		case pb.SecurityLevel_SECURITY_LEVEL_NO_AUTH_NO_PRIV:
-			// OK
-		case pb.SecurityLevel_SECURITY_LEVEL_AUTH_NO_PRIV:
-			if v3.AuthProtocol == pb.AuthProtocol_AUTH_PROTOCOL_UNSPECIFIED {
-				return fmt.Errorf("authNoPriv requires auth_protocol")
-			}
-			if v3.AuthPassword == "" {
-				return fmt.Errorf("authNoPriv requires auth_password")
-			}
-		case pb.SecurityLevel_SECURITY_LEVEL_AUTH_PRIV:
-			if v3.AuthProtocol == pb.AuthProtocol_AUTH_PROTOCOL_UNSPECIFIED {
-				return fmt.Errorf("authPriv requires auth_protocol")
-			}
-			if v3.AuthPassword == "" {
-				return fmt.Errorf("authPriv requires auth_password")
-			}
-			if v3.PrivProtocol == pb.PrivProtocol_PRIV_PROTOCOL_UNSPECIFIED {
-				return fmt.Errorf("authPriv requires priv_protocol")
-			}
-			if v3.PrivPassword == "" {
-				return fmt.Errorf("authPriv requires priv_password")
-			}
-		case pb.SecurityLevel_SECURITY_LEVEL_UNSPECIFIED:
-			return fmt.Errorf("SNMPv3 requires security_level")
-		}
-	}
-
-	return nil
-}
-
-func (srv *Server) handleUnmonitor(sess *Session, id uint64, req *pb.UnmonitorRequest) {
-	srv.mu.Lock()
-
-	t, ok := srv.targets[req.TargetId]
-	if !ok {
-		srv.mu.Unlock()
-		sess.Send(wire.NewError(id, wire.ErrTargetNotFound, "target not found"))
-		return
-	}
-
-	t.RemoveOwner(sess.ID)
-	sess.Unsubscribe(req.TargetId)
-
-	shouldRemove := !t.HasOwners()
-	if shouldRemove {
-		delete(srv.targets, req.TargetId)
-		delete(srv.targetIndex, t.Key())
-		log.Printf("Removed target %s (no owners)", req.TargetId)
-	}
-	srv.mu.Unlock()
-
-	if shouldRemove {
-		srv.poller.RemoveTarget(req.TargetId)
-	}
-
-	sess.Send(&pb.Envelope{
-		Id: id,
-		Payload: &pb.Envelope_UnmonitorResp{
-			UnmonitorResp: &pb.UnmonitorResponse{Ok: true},
-		},
-	})
-}
-
-func (srv *Server) handleListTargets(sess *Session, id uint64, req *pb.ListTargetsRequest) {
+func (srv *Server) browseServerStatus() (*pb.BrowseResponse, error) {
 	srv.mu.RLock()
-	defer srv.mu.RUnlock()
-
-	var targets []*pb.Target
-	for _, t := range srv.targets {
-		if req.FilterHost != "" && t.Host != req.FilterHost {
-			continue
-		}
-		targets = append(targets, t.ToProto())
-	}
-
-	sess.Send(&pb.Envelope{
-		Id: id,
-		Payload: &pb.Envelope_ListTargetsResp{
-			ListTargetsResp: &pb.ListTargetsResponse{Targets: targets},
-		},
-	})
-}
-
-func (srv *Server) handleGetTarget(sess *Session, id uint64, req *pb.GetTargetRequest) {
-	srv.mu.RLock()
-	defer srv.mu.RUnlock()
-
-	t, ok := srv.targets[req.TargetId]
-	if !ok {
-		sess.Send(wire.NewError(id, wire.ErrTargetNotFound, "target not found"))
-		return
-	}
-
-	sess.Send(&pb.Envelope{
-		Id: id,
-		Payload: &pb.Envelope_GetTargetResp{
-			GetTargetResp: &pb.GetTargetResponse{Target: t.ToProto()},
-		},
-	})
-}
-
-func (srv *Server) handleGetHistory(sess *Session, id uint64, req *pb.GetHistoryRequest) {
-	srv.mu.RLock()
-	defer srv.mu.RUnlock()
-
-	n := int(req.LastN)
-	if n == 0 {
-		n = 100
-	}
-
-	var history []*pb.TargetHistory
-	for _, targetID := range req.TargetIds {
-		t, ok := srv.targets[targetID]
-		if !ok {
-			continue
-		}
-
-		samples := t.ReadLastN(n)
-		pbSamples := make([]*pb.Sample, len(samples))
-		for i, s := range samples {
-			pbSamples[i] = &pb.Sample{
-				TargetId:    targetID,
-				TimestampMs: s.TimestampMs,
-				Counter:     s.Counter,
-				Text:        s.Text,
-				Valid:       s.Valid,
-				Error:       s.Error,
-				PollMs:      s.PollMs,
-			}
-		}
-
-		history = append(history, &pb.TargetHistory{
-			TargetId: targetID,
-			Samples:  pbSamples,
-		})
-	}
-
-	sess.Send(&pb.Envelope{
-		Id: id,
-		Payload: &pb.Envelope_GetHistoryResp{
-			GetHistoryResp: &pb.GetHistoryResponse{History: history},
-		},
-	})
-}
-
-func (srv *Server) handleSubscribe(sess *Session, id uint64, req *pb.SubscribeRequest) {
-	srv.mu.RLock()
-	defer srv.mu.RUnlock()
-
-	var subscribed []string
-	for _, targetID := range req.TargetIds {
-		_, ok := srv.targets[targetID]
-		if !ok {
-			continue
-		}
-		sess.Subscribe(targetID)
-		subscribed = append(subscribed, targetID)
-	}
-
-	sess.Send(&pb.Envelope{
-		Id: id,
-		Payload: &pb.Envelope_SubscribeResp{
-			SubscribeResp: &pb.SubscribeResponse{Ok: len(subscribed) > 0, Subscribed: subscribed},
-		},
-	})
-}
-
-func (srv *Server) handleUnsubscribe(sess *Session, id uint64, req *pb.UnsubscribeRequest) {
-	targetIDs := req.TargetIds
-	if len(targetIDs) == 0 {
-		targetIDs = sess.GetSubscriptions()
-	}
-
-	for _, targetID := range targetIDs {
-		sess.Unsubscribe(targetID)
-	}
-
-	sess.Send(&pb.Envelope{
-		Id: id,
-		Payload: &pb.Envelope_UnsubscribeResp{
-			UnsubscribeResp: &pb.UnsubscribeResponse{Ok: true},
-		},
-	})
-}
-
-// ============================================================================
-// NEW: Status Handlers
-// ============================================================================
-
-func (srv *Server) handleGetServerStatus(sess *Session, id uint64) {
-	srv.mu.RLock()
-
 	var sessActive, sessLost int
 	for _, s := range srv.sessions {
 		if s.IsLost() {
@@ -669,72 +699,290 @@ func (srv *Server) handleGetServerStatus(sess *Session, id uint64) {
 		}
 		t.mu.RUnlock()
 	}
-
 	targetsTotal := len(srv.targets)
 	srv.mu.RUnlock()
 
-	// Get poller stats
 	heapSize, queueUsed := srv.poller.Stats()
 
-	resp := &pb.GetServerStatusResponse{
-		Version:             Version,
-		UptimeMs:            time.Since(srv.startedAt).Milliseconds(),
-		StartedAtMs:         srv.startedAt.UnixMilli(),
-		SessionsActive:      int32(sessActive),
-		SessionsLost:        int32(sessLost),
-		TargetsTotal:        int32(targetsTotal),
-		TargetsPolling:      int32(targetsPolling),
-		TargetsUnreachable:  int32(targetsUnreachable),
-		PollerWorkers:       int32(srv.cfg.Poller.Workers),
-		PollerQueueUsed:     int32(queueUsed),
-		PollerQueueCapacity: int32(srv.cfg.Poller.QueueSize),
-		PollerHeapSize:      int32(heapSize),
-		PollsTotal:          srv.pollsTotal.Load(),
-		PollsSuccess:        srv.pollsOK.Load(),
-		PollsFailed:         srv.pollsFailed.Load(),
+	info := map[string]string{
+		"version":             Version,
+		"uptime":              formatDuration(time.Since(srv.startedAt)),
+		"started_at":          srv.startedAt.Format(time.RFC3339),
+		"sessions_active":     fmt.Sprintf("%d", sessActive),
+		"sessions_lost":       fmt.Sprintf("%d", sessLost),
+		"targets_total":       fmt.Sprintf("%d", targetsTotal),
+		"targets_polling":     fmt.Sprintf("%d", targetsPolling),
+		"targets_unreachable": fmt.Sprintf("%d", targetsUnreachable),
+		"poller_workers":      fmt.Sprintf("%d", srv.cfg.Poller.Workers),
+		"poller_queue":        fmt.Sprintf("%d/%d", queueUsed, srv.cfg.Poller.QueueSize),
+		"poller_heap":         fmt.Sprintf("%d", heapSize),
+		"polls_total":         fmt.Sprintf("%d", srv.pollsTotal.Load()),
+		"polls_success":       fmt.Sprintf("%d", srv.pollsOK.Load()),
+		"polls_failed":        fmt.Sprintf("%d", srv.pollsFailed.Load()),
 	}
 
-	sess.Send(&pb.Envelope{
-		Id: id,
-		Payload: &pb.Envelope_GetServerStatusResp{
-			GetServerStatusResp: resp,
-		},
-	})
+	return &pb.BrowseResponse{
+		Path:  "server/status",
+		Nodes: []*pb.BrowseNode{{Name: "status", Type: pb.NodeType_NODE_INFO, Info: info}},
+	}, nil
 }
 
-func (srv *Server) handleGetSessionInfo(sess *Session, id uint64) {
+func (srv *Server) browseServerConfig() (*pb.BrowseResponse, error) {
+	srv.runtimeMu.RLock()
+	info := map[string]string{
+		"default_timeout_ms":  fmt.Sprintf("%d", srv.defaultTimeoutMs),
+		"default_retries":     fmt.Sprintf("%d", srv.defaultRetries),
+		"default_buffer_size": fmt.Sprintf("%d", srv.defaultBufferSize),
+		"min_interval_ms":     fmt.Sprintf("%d", srv.minIntervalMs),
+		"poller_workers":      fmt.Sprintf("%d", srv.cfg.Poller.Workers),
+		"poller_queue_size":   fmt.Sprintf("%d", srv.cfg.Poller.QueueSize),
+		"reconnect_window":    fmt.Sprintf("%ds", srv.cfg.Session.ReconnectWindowSec),
+	}
+	srv.runtimeMu.RUnlock()
+
+	return &pb.BrowseResponse{
+		Path:  "server/config",
+		Nodes: []*pb.BrowseNode{{Name: "config", Type: pb.NodeType_NODE_INFO, Info: info}},
+	}, nil
+}
+
+func (srv *Server) browseServerSessions(parts []string) (*pb.BrowseResponse, error) {
+	srv.mu.RLock()
+	defer srv.mu.RUnlock()
+
+	if len(parts) == 0 {
+		nodes := make([]*pb.BrowseNode, 0, len(srv.sessions))
+		for id, sess := range srv.sessions {
+			status := "connected"
+			if sess.IsLost() {
+				status = "lost"
+			}
+			nodes = append(nodes, &pb.BrowseNode{
+				Name: id,
+				Type: pb.NodeType_NODE_INFO,
+				Info: map[string]string{
+					"token_id": sess.TokenID,
+					"status":   status,
+					"created":  sess.CreatedAt.Format(time.RFC3339),
+				},
+			})
+		}
+		return &pb.BrowseResponse{Path: "server/sessions", Nodes: nodes}, nil
+	}
+
+	sess, ok := srv.sessions[parts[0]]
+	if !ok {
+		return nil, fmt.Errorf("session not found: %s", parts[0])
+	}
+
+	status := "connected"
+	if sess.IsLost() {
+		status = "lost"
+	}
+
+	info := map[string]string{
+		"session_id":    sess.ID,
+		"token_id":      sess.TokenID,
+		"status":        status,
+		"created":       sess.CreatedAt.Format(time.RFC3339),
+		"subscriptions": fmt.Sprintf("%d", len(sess.GetSubscriptions())),
+	}
+
+	return &pb.BrowseResponse{
+		Path:  "server/sessions/" + parts[0],
+		Nodes: []*pb.BrowseNode{{Name: parts[0], Type: pb.NodeType_NODE_INFO, Info: info}},
+	}, nil
+}
+
+func (srv *Server) browseSession(sess *Session, parts []string) (*pb.BrowseResponse, error) {
+	if len(parts) == 0 {
+		return &pb.BrowseResponse{
+			Path: "session",
+			Nodes: []*pb.BrowseNode{
+				{Name: "info", Type: pb.NodeType_NODE_INFO},
+				{Name: "subscriptions", Type: pb.NodeType_NODE_DIRECTORY},
+				{Name: "owned", Type: pb.NodeType_NODE_DIRECTORY},
+			},
+		}, nil
+	}
+
+	switch parts[0] {
+	case "info":
+		return srv.browseSessionInfo(sess)
+	case "subscriptions":
+		return srv.browseSessionSubscriptions(sess)
+	case "owned":
+		return srv.browseSessionOwned(sess)
+	default:
+		return nil, fmt.Errorf("unknown session path: %s", parts[0])
+	}
+}
+
+func (srv *Server) browseSessionInfo(sess *Session) (*pb.BrowseResponse, error) {
+	subs := sess.GetSubscriptions()
+
 	srv.mu.RLock()
 	var owned []string
-	for targetID, t := range srv.targets {
+	for tid, t := range srv.targets {
 		t.mu.RLock()
 		if t.Owners[sess.ID] {
-			owned = append(owned, targetID)
+			owned = append(owned, tid)
 		}
 		t.mu.RUnlock()
 	}
 	srv.mu.RUnlock()
 
-	subscribed := sess.GetSubscriptions()
-
-	sess.mu.RLock()
-	createdAt := sess.CreatedAt.UnixMilli()
-	sess.mu.RUnlock()
-
-	resp := &pb.GetSessionInfoResponse{
-		SessionId:         sess.ID,
-		TokenId:           sess.TokenID,
-		CreatedAtMs:       createdAt,
-		ConnectedAtMs:     createdAt,
-		OwnedTargets:      owned,
-		SubscribedTargets: subscribed,
+	info := map[string]string{
+		"session_id":    sess.ID,
+		"token_id":      sess.TokenID,
+		"created":       sess.CreatedAt.Format(time.RFC3339),
+		"subscriptions": fmt.Sprintf("%d", len(subs)),
+		"owned_targets": fmt.Sprintf("%d", len(owned)),
 	}
+
+	return &pb.BrowseResponse{
+		Path:  "session/info",
+		Nodes: []*pb.BrowseNode{{Name: "info", Type: pb.NodeType_NODE_INFO, Info: info}},
+	}, nil
+}
+
+func (srv *Server) browseSessionSubscriptions(sess *Session) (*pb.BrowseResponse, error) {
+	subs := sess.GetSubscriptions()
+
+	srv.mu.RLock()
+	defer srv.mu.RUnlock()
+
+	nodes := make([]*pb.BrowseNode, 0, len(subs))
+	for _, tid := range subs {
+		if t, ok := srv.targets[tid]; ok {
+			nodes = append(nodes, &pb.BrowseNode{
+				Name:   tid,
+				Type:   pb.NodeType_NODE_TARGET,
+				Target: t.ToProto(),
+			})
+		}
+	}
+
+	return &pb.BrowseResponse{Path: "session/subscriptions", Nodes: nodes}, nil
+}
+
+func (srv *Server) browseSessionOwned(sess *Session) (*pb.BrowseResponse, error) {
+	srv.mu.RLock()
+	defer srv.mu.RUnlock()
+
+	var nodes []*pb.BrowseNode
+	for tid, t := range srv.targets {
+		t.mu.RLock()
+		isOwner := t.Owners[sess.ID]
+		t.mu.RUnlock()
+		if isOwner {
+			nodes = append(nodes, &pb.BrowseNode{
+				Name:   tid,
+				Type:   pb.NodeType_NODE_TARGET,
+				Target: t.ToProto(),
+			})
+		}
+	}
+
+	return &pb.BrowseResponse{Path: "session/owned", Nodes: nodes}, nil
+}
+
+// ============================================================================
+// Target CRUD Handlers
+// ============================================================================
+
+func (srv *Server) handleCreateTarget(sess *Session, id uint64, req *pb.CreateTargetRequest) {
+	// Validate protocol config
+	snmpCfg := req.GetSnmp()
+	if snmpCfg == nil {
+		sess.Send(wire.NewError(id, wire.ErrInvalidRequest, "protocol config required (snmp)"))
+		return
+	}
+
+	if snmpCfg.Host == "" || snmpCfg.Oid == "" {
+		sess.Send(wire.NewError(id, wire.ErrInvalidRequest, "host and oid required"))
+		return
+	}
+
+	// Validate interval
+	srv.runtimeMu.RLock()
+	minInterval := srv.minIntervalMs
+	defaultBufSize := srv.defaultBufferSize
+	srv.runtimeMu.RUnlock()
+
+	if req.IntervalMs > 0 && req.IntervalMs < minInterval {
+		sess.Send(wire.NewError(id, wire.ErrInvalidRequest,
+			fmt.Sprintf("interval_ms must be >= %d", minInterval)))
+		return
+	}
+
+	// Build key for deduplication
+	port := uint16(snmpCfg.Port)
+	if port == 0 {
+		port = 161
+	}
+	key := fmt.Sprintf("%s:%d/%s", snmpCfg.Host, port, snmpCfg.Oid)
+
+	srv.mu.Lock()
+
+	// Check for existing target by key
+	if existingID, ok := srv.targetIndex[key]; ok {
+		t := srv.targets[existingID]
+		t.AddOwner(sess.ID)
+		srv.mu.Unlock()
+
+		sess.Send(&pb.Envelope{
+			Id: id,
+			Payload: &pb.Envelope_CreateTargetResp{
+				CreateTargetResp: &pb.CreateTargetResponse{
+					Ok:       true,
+					TargetId: existingID,
+					Created:  false,
+					Message:  "joined existing target",
+				},
+			},
+		})
+		log.Printf("Session %s joined target %s", sess.ID, existingID)
+		return
+	}
+
+	// Check for ID collision
+	targetID := req.Id
+	if targetID == "" {
+		targetID = srv.genID()
+	} else if _, exists := srv.targets[targetID]; exists {
+		srv.mu.Unlock()
+		sess.Send(wire.NewError(id, wire.ErrInvalidRequest, "target ID already exists"))
+		return
+	}
+
+	// Apply buffer size default
+	if req.BufferSize == 0 {
+		req.BufferSize = defaultBufSize
+	}
+
+	// Create target
+	t := NewTarget(targetID, req, srv.cfg.SNMP.BufferSize)
+	t.AddOwner(sess.ID)
+
+	srv.targets[targetID] = t
+	srv.targetIndex[key] = targetID
+	srv.tagIndex.Add(targetID, t.Tags)
+	srv.mu.Unlock()
+
+	srv.poller.AddTarget(targetID, t.IntervalMs)
 
 	sess.Send(&pb.Envelope{
 		Id: id,
-		Payload: &pb.Envelope_GetSessionInfoResp{
-			GetSessionInfoResp: resp,
+		Payload: &pb.Envelope_CreateTargetResp{
+			CreateTargetResp: &pb.CreateTargetResponse{
+				Ok:       true,
+				TargetId: targetID,
+				Created:  true,
+			},
 		},
 	})
+	log.Printf("Session %s created target %s (%s)", sess.ID, targetID, key)
 }
 
 func (srv *Server) handleUpdateTarget(sess *Session, id uint64, req *pb.UpdateTargetRequest) {
@@ -742,86 +990,98 @@ func (srv *Server) handleUpdateTarget(sess *Session, id uint64, req *pb.UpdateTa
 	t, ok := srv.targets[req.TargetId]
 	if !ok {
 		srv.mu.Unlock()
-		sess.Send(wire.NewError(id, wire.ErrTargetNotFound, "target not found"))
+		sess.Send(wire.NewError(id, wire.ErrInvalidRequest, "target not found"))
 		return
 	}
 
-	// Check ownership
-	t.mu.Lock()
-	if !t.Owners[sess.ID] {
-		t.mu.Unlock()
+	// Check ownership (config targets can be updated by anyone)
+	t.mu.RLock()
+	isOwner := t.Owners[sess.ID] || t.IsConfigTarget()
+	t.mu.RUnlock()
+
+	if !isOwner {
 		srv.mu.Unlock()
-		sess.Send(wire.NewError(id, wire.ErrInternal, "not owner of target"))
+		sess.Send(wire.NewError(id, wire.ErrInvalidRequest, "not owner of target"))
 		return
 	}
-	t.mu.Unlock()
-	srv.mu.Unlock()
 
-	var changed bool
-	var newIntervalMs uint32
 	var changes []string
 
-	// Update interval (0 = not set)
-	if req.GetIntervalMs() > 0 {
-		newInterval := req.GetIntervalMs()
+	// Update description
+	if req.Description != nil {
+		t.mu.Lock()
+		t.Description = *req.Description
+		t.mu.Unlock()
+		changes = append(changes, "description")
+	}
 
+	// Update interval
+	if req.IntervalMs != nil && *req.IntervalMs > 0 {
 		srv.runtimeMu.RLock()
 		minInterval := srv.minIntervalMs
 		srv.runtimeMu.RUnlock()
 
-		if newInterval < minInterval {
+		if *req.IntervalMs < minInterval {
+			srv.mu.Unlock()
 			sess.Send(wire.NewError(id, wire.ErrInvalidRequest,
 				fmt.Sprintf("interval_ms must be >= %d", minInterval)))
 			return
 		}
 
 		t.mu.Lock()
-		t.IntervalMs = newInterval
+		t.IntervalMs = *req.IntervalMs
 		t.mu.Unlock()
-		newIntervalMs = newInterval
-		changed = true
-		changes = append(changes, fmt.Sprintf("interval=%dms", newInterval))
+		srv.poller.UpdateInterval(req.TargetId, *req.IntervalMs)
+		changes = append(changes, fmt.Sprintf("interval=%dms", *req.IntervalMs))
 	}
 
-	// Update timeout (0 = not set)
-	if req.GetTimeoutMs() > 0 {
+	// Update buffer size
+	if req.BufferSize != nil && *req.BufferSize > 0 {
+		t.ResizeBuffer(int(*req.BufferSize))
+		changes = append(changes, fmt.Sprintf("buffer=%d", *req.BufferSize))
+	}
+
+	// Update timeout
+	if req.TimeoutMs != nil && *req.TimeoutMs > 0 {
 		t.mu.Lock()
-		if t.SNMP == nil {
-			t.SNMP = &pb.SNMPConfig{}
+		if t.SNMP != nil {
+			t.SNMP.TimeoutMs = *req.TimeoutMs
 		}
-		t.SNMP.TimeoutMs = req.GetTimeoutMs()
 		t.mu.Unlock()
-		changed = true
-		changes = append(changes, fmt.Sprintf("timeout=%dms", req.GetTimeoutMs()))
+		changes = append(changes, fmt.Sprintf("timeout=%dms", *req.TimeoutMs))
 	}
 
-	// Update retries (0 = not set)
-	if req.GetRetries() > 0 {
+	// Update retries
+	if req.Retries != nil && *req.Retries > 0 {
 		t.mu.Lock()
-		if t.SNMP == nil {
-			t.SNMP = &pb.SNMPConfig{}
+		if t.SNMP != nil {
+			t.SNMP.Retries = *req.Retries
 		}
-		t.SNMP.Retries = req.GetRetries()
 		t.mu.Unlock()
-		changed = true
-		changes = append(changes, fmt.Sprintf("retries=%d", req.GetRetries()))
+		changes = append(changes, fmt.Sprintf("retries=%d", *req.Retries))
 	}
 
-	// Update buffer size (0 = not set)
-	if req.GetBufferSize() > 0 {
-		newSize := int(req.GetBufferSize())
-		t.ResizeBuffer(newSize)
-		changed = true
-		changes = append(changes, fmt.Sprintf("buffer=%d", newSize))
+	// Update persistent
+	if req.Persistent != nil {
+		t.mu.Lock()
+		t.Persistent = *req.Persistent
+		t.mu.Unlock()
+		changes = append(changes, fmt.Sprintf("persistent=%v", *req.Persistent))
 	}
 
-	// Update scheduler if interval changed
-	if newIntervalMs > 0 {
-		srv.poller.UpdateInterval(req.TargetId, newIntervalMs)
+	// Update tags
+	if len(req.SetTags) > 0 || len(req.AddTags) > 0 || len(req.RemoveTags) > 0 {
+		newTags := srv.tagIndex.UpdateTags(req.TargetId, req.AddTags, req.RemoveTags, req.SetTags)
+		t.mu.Lock()
+		t.Tags = newTags
+		t.mu.Unlock()
+		changes = append(changes, "tags")
 	}
+
+	srv.mu.Unlock()
 
 	msg := "no changes"
-	if changed {
+	if len(changes) > 0 {
 		msg = "updated: " + strings.Join(changes, ", ")
 	}
 
@@ -837,6 +1097,194 @@ func (srv *Server) handleUpdateTarget(sess *Session, id uint64, req *pb.UpdateTa
 	})
 }
 
+func (srv *Server) handleDeleteTarget(sess *Session, id uint64, req *pb.DeleteTargetRequest) {
+	srv.mu.Lock()
+
+	t, ok := srv.targets[req.TargetId]
+	if !ok {
+		srv.mu.Unlock()
+		sess.Send(wire.NewError(id, wire.ErrInvalidRequest, "target not found"))
+		return
+	}
+
+	t.mu.RLock()
+	isPersistent := t.Persistent
+	isOwner := t.Owners[sess.ID]
+	key := t.Key()
+	t.mu.RUnlock()
+
+	// Check if deletion is allowed
+	if isPersistent && !req.Force {
+		srv.mu.Unlock()
+		sess.Send(wire.NewError(id, wire.ErrInvalidRequest, "target is persistent, use force=true to delete"))
+		return
+	}
+
+	if !isOwner && !req.Force {
+		// Just remove ownership
+		t.RemoveOwner(sess.ID)
+		sess.Unsubscribe(req.TargetId)
+
+		// Check if target should be removed (no owners and not persistent)
+		shouldRemove := !t.HasOwners() && !t.Persistent
+		if shouldRemove {
+			delete(srv.targets, req.TargetId)
+			delete(srv.targetIndex, key)
+			srv.tagIndex.Remove(req.TargetId)
+			srv.mu.Unlock()
+			srv.poller.RemoveTarget(req.TargetId)
+			log.Printf("Removed target %s (no owners)", req.TargetId)
+		} else {
+			srv.mu.Unlock()
+		}
+
+		sess.Send(&pb.Envelope{
+			Id: id,
+			Payload: &pb.Envelope_DeleteTargetResp{
+				DeleteTargetResp: &pb.DeleteTargetResponse{Ok: true, Message: "removed ownership"},
+			},
+		})
+		return
+	}
+
+	// Force delete or owner deleting
+	delete(srv.targets, req.TargetId)
+	delete(srv.targetIndex, key)
+	srv.tagIndex.Remove(req.TargetId)
+	srv.mu.Unlock()
+
+	srv.poller.RemoveTarget(req.TargetId)
+	log.Printf("Deleted target %s (force=%v)", req.TargetId, req.Force)
+
+	sess.Send(&pb.Envelope{
+		Id: id,
+		Payload: &pb.Envelope_DeleteTargetResp{
+			DeleteTargetResp: &pb.DeleteTargetResponse{Ok: true, Message: "deleted"},
+		},
+	})
+}
+
+// ============================================================================
+// History Handler
+// ============================================================================
+
+func (srv *Server) handleGetHistory(sess *Session, id uint64, req *pb.GetHistoryRequest) {
+	srv.mu.RLock()
+	t, ok := srv.targets[req.TargetId]
+	srv.mu.RUnlock()
+
+	if !ok {
+		sess.Send(wire.NewError(id, wire.ErrInvalidRequest, "target not found"))
+		return
+	}
+
+	n := int(req.LastN)
+	if n == 0 {
+		n = 100
+	}
+
+	samples := t.ReadLastN(n)
+	pbSamples := make([]*pb.Sample, len(samples))
+	for i, s := range samples {
+		pbSamples[i] = &pb.Sample{
+			TargetId:    req.TargetId,
+			TimestampMs: s.TimestampMs,
+			Counter:     s.Counter,
+			Text:        s.Text,
+			Valid:       s.Valid,
+			Error:       s.Error,
+			PollMs:      s.PollMs,
+		}
+	}
+
+	sess.Send(&pb.Envelope{
+		Id: id,
+		Payload: &pb.Envelope_GetHistoryResp{
+			GetHistoryResp: &pb.GetHistoryResponse{
+				TargetId: req.TargetId,
+				Samples:  pbSamples,
+			},
+		},
+	})
+}
+
+// ============================================================================
+// Subscription Handlers
+// ============================================================================
+
+func (srv *Server) handleSubscribe(sess *Session, id uint64, req *pb.SubscribeRequest) {
+	srv.mu.RLock()
+	defer srv.mu.RUnlock()
+
+	var subscribed []string
+
+	// Subscribe by target IDs
+	for _, targetID := range req.TargetIds {
+		if _, ok := srv.targets[targetID]; ok {
+			sess.Subscribe(targetID)
+			subscribed = append(subscribed, targetID)
+		}
+	}
+
+	// Subscribe by tags
+	for _, tag := range req.Tags {
+		targets := srv.tagIndex.Query(tag)
+		for _, targetID := range targets {
+			if _, ok := srv.targets[targetID]; ok {
+				sess.Subscribe(targetID)
+				subscribed = append(subscribed, targetID)
+			}
+		}
+	}
+
+	// Deduplicate
+	seen := make(map[string]bool)
+	unique := make([]string, 0, len(subscribed))
+	for _, s := range subscribed {
+		if !seen[s] {
+			seen[s] = true
+			unique = append(unique, s)
+		}
+	}
+
+	sess.Send(&pb.Envelope{
+		Id: id,
+		Payload: &pb.Envelope_SubscribeResp{
+			SubscribeResp: &pb.SubscribeResponse{
+				Ok:         len(unique) > 0,
+				Subscribed: unique,
+			},
+		},
+	})
+}
+
+func (srv *Server) handleUnsubscribe(sess *Session, id uint64, req *pb.UnsubscribeRequest) {
+	var unsubscribed []string
+
+	if len(req.TargetIds) == 0 {
+		unsubscribed = sess.UnsubscribeAll()
+	} else {
+		for _, targetID := range req.TargetIds {
+			sess.Unsubscribe(targetID)
+			unsubscribed = append(unsubscribed, targetID)
+		}
+	}
+
+	sess.Send(&pb.Envelope{
+		Id: id,
+		Payload: &pb.Envelope_UnsubscribeResp{
+			UnsubscribeResp: &pb.UnsubscribeResponse{
+				Ok:           true,
+				Unsubscribed: unsubscribed,
+			},
+		},
+	})
+}
+
+// ============================================================================
+// Config Handlers
+// ============================================================================
+
 func (srv *Server) handleGetConfig(sess *Session, id uint64) {
 	srv.runtimeMu.RLock()
 	cfg := &pb.RuntimeConfig{
@@ -846,7 +1294,10 @@ func (srv *Server) handleGetConfig(sess *Session, id uint64) {
 		MinIntervalMs:      srv.minIntervalMs,
 		PollerWorkers:      int32(srv.cfg.Poller.Workers),
 		PollerQueueSize:    int32(srv.cfg.Poller.QueueSize),
-		ReconnectWindowSec: uint32(srv.cfg.ReconnectWindow().Seconds()),
+		ReconnectWindowSec: uint32(srv.cfg.Session.ReconnectWindowSec),
+		Version:            Version,
+		UptimeMs:           time.Since(srv.startedAt).Milliseconds(),
+		StartedAtMs:        srv.startedAt.UnixMilli(),
 	}
 	srv.runtimeMu.RUnlock()
 
@@ -861,18 +1312,17 @@ func (srv *Server) handleGetConfig(sess *Session, id uint64) {
 func (srv *Server) handleSetConfig(sess *Session, id uint64, req *pb.SetConfigRequest) {
 	srv.runtimeMu.Lock()
 
-	// Use getter methods - 0 means "not set"
-	if req.GetDefaultTimeoutMs() > 0 {
-		srv.defaultTimeoutMs = req.GetDefaultTimeoutMs()
+	if req.DefaultTimeoutMs != nil && *req.DefaultTimeoutMs > 0 {
+		srv.defaultTimeoutMs = *req.DefaultTimeoutMs
 	}
-	if req.GetDefaultRetries() > 0 {
-		srv.defaultRetries = req.GetDefaultRetries()
+	if req.DefaultRetries != nil && *req.DefaultRetries > 0 {
+		srv.defaultRetries = *req.DefaultRetries
 	}
-	if req.GetDefaultBufferSize() > 0 {
-		srv.defaultBufferSize = req.GetDefaultBufferSize()
+	if req.DefaultBufferSize != nil && *req.DefaultBufferSize > 0 {
+		srv.defaultBufferSize = *req.DefaultBufferSize
 	}
-	if req.GetMinIntervalMs() > 0 {
-		srv.minIntervalMs = req.GetMinIntervalMs()
+	if req.MinIntervalMs != nil && *req.MinIntervalMs > 0 {
+		srv.minIntervalMs = *req.MinIntervalMs
 	}
 
 	cfg := &pb.RuntimeConfig{
@@ -882,7 +1332,10 @@ func (srv *Server) handleSetConfig(sess *Session, id uint64, req *pb.SetConfigRe
 		MinIntervalMs:      srv.minIntervalMs,
 		PollerWorkers:      int32(srv.cfg.Poller.Workers),
 		PollerQueueSize:    int32(srv.cfg.Poller.QueueSize),
-		ReconnectWindowSec: uint32(srv.cfg.ReconnectWindow().Seconds()),
+		ReconnectWindowSec: uint32(srv.cfg.Session.ReconnectWindowSec),
+		Version:            Version,
+		UptimeMs:           time.Since(srv.startedAt).Milliseconds(),
+		StartedAtMs:        srv.startedAt.UnixMilli(),
 	}
 	srv.runtimeMu.Unlock()
 
@@ -966,10 +1419,21 @@ func (srv *Server) cleanupTargets() {
 
 	var toRemove []string
 	for id, t := range srv.targets {
+		// Skip persistent targets
+		t.mu.RLock()
+		isPersistent := t.Persistent
+		key := t.Key()
+		t.mu.RUnlock()
+
+		if isPersistent {
+			continue
+		}
+
 		if !t.HasOwners() {
 			toRemove = append(toRemove, id)
 			delete(srv.targets, id)
-			delete(srv.targetIndex, t.Key())
+			delete(srv.targetIndex, key)
+			srv.tagIndex.Remove(id)
 			log.Printf("Removed orphan target %s", id)
 		}
 	}
@@ -982,4 +1446,18 @@ func (srv *Server) cleanupTargets() {
 
 func (srv *Server) genID() string {
 	return uuid.New().String()[:8]
+}
+
+func formatDuration(d time.Duration) string {
+	days := int(d.Hours() / 24)
+	hours := int(d.Hours()) % 24
+	mins := int(d.Minutes()) % 60
+
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, mins)
+	}
+	return fmt.Sprintf("%dm", mins)
 }
