@@ -5,18 +5,18 @@ package snmpproxy.v1;
 option go_package = "github.com/xtxerr/snmpproxy/internal/proto";
 
 // ============================================================================
-// Envelope - Wire format wrapper for all messages
+// Envelope - Wire format wrapper
 // ============================================================================
 
 message Envelope {
-  uint64 id = 1;  // Request/Response correlation. Push messages use id=0.
+  uint64 id = 1;
   
   oneof payload {
     // Auth
     AuthRequest auth_req = 10;
     AuthResponse auth_resp = 11;
     
-    // Browse (unified ls command)
+    // Browse (unified navigation)
     BrowseRequest browse_req = 20;
     BrowseResponse browse_resp = 21;
     
@@ -86,40 +86,55 @@ message AuthResponse {
 }
 
 // ============================================================================
-// Browse (unified ls command)
+// Browse - Unified Navigation
 // ============================================================================
 
 message BrowseRequest {
-  string path = 1;          // "", "targets", "targets/type/network", "server/status"
-  bool recursive = 2;       // -r flag
-  int32 depth = 3;          // -d flag, 0 = only direct children
-  bool long_format = 4;     // -l flag, include full target details
+  string path = 1;                // "/", "/targets", "/targets/abc123", "/tags/location/dc1"
+  bool long_format = 2;           // -l: include full details
+  
+  // Filters (apply to target listings)
+  repeated string filter_tags = 10;   // AND-combined
+  string filter_state = 11;           // "polling", "unreachable", "error"
+  string filter_protocol = 12;        // "snmp", "http", "icmp"
+  string filter_host = 13;            // Glob pattern: "192.168.*"
+  
+  // Pagination
+  int32 limit = 20;                   // Default 100, 0 = all (use with caution)
+  string cursor = 21;                 // Last ID from previous page
 }
 
 message BrowseResponse {
   string path = 1;
   repeated BrowseNode nodes = 2;
+  
+  // Pagination
+  int32 total_count = 10;             // Total matching (if known, -1 if unknown)
+  string next_cursor = 11;            // Empty if last page
+  bool has_more = 12;
 }
 
 message BrowseNode {
   string name = 1;
   NodeType type = 2;
+  string description = 3;             // Short description for listings
   
-  // For NODE_DIRECTORY
-  int32 target_count = 10;
-  repeated BrowseNode children = 11;  // When recursive
+  // Directory info
+  int32 child_count = 10;             // Number of children (targets + subdirs)
+  int32 target_count = 11;            // Number of targets (direct + nested)
   
-  // For NODE_TARGET (when long_format or direct target access)
+  // Target info (when type=NODE_TARGET and long_format or direct access)
   Target target = 20;
   
-  // For NODE_INFO
+  // Info node (key-value pairs)
   map<string, string> info = 30;
 }
 
 enum NodeType {
-  NODE_DIRECTORY = 0;
-  NODE_TARGET = 1;
-  NODE_INFO = 2;
+  NODE_UNKNOWN = 0;
+  NODE_DIRECTORY = 1;
+  NODE_TARGET = 2;
+  NODE_INFO = 3;
 }
 
 // ============================================================================
@@ -127,36 +142,44 @@ enum NodeType {
 // ============================================================================
 
 message Target {
+  // Identity
   string id = 1;
   string description = 2;
-  repeated string tags = 3;       // Hierarchical paths: "type/network/router"
+  repeated string tags = 3;
   bool persistent = 4;
-  string protocol = 5;            // "snmp", future: "http", "icmp"
+  string protocol = 5;                // "snmp", "http", "icmp"
   
   // Polling config
   uint32 interval_ms = 10;
   uint32 buffer_size = 11;
   
   // Runtime state
-  string state = 20;              // "polling", "unreachable", "error"
+  string state = 20;                  // "polling", "unreachable", "error"
   int64 last_poll_ms = 21;
   string last_error = 22;
-  int32 samples_buffered = 23;
-  int32 subscribers = 24;
+  int32 error_count = 23;
+  int32 samples_buffered = 24;
+  
+  // Ownership
+  int32 owner_count = 30;
+  int32 subscriber_count = 31;
+  repeated string owners = 32;        // Session IDs (in long_format)
+  repeated string subscribers = 33;   // Session IDs (in long_format)
   
   // Statistics
-  int64 created_at_ms = 30;
-  int64 polls_total = 31;
-  int64 polls_success = 32;
-  int64 polls_failed = 33;
-  int32 avg_poll_ms = 34;
-  int32 min_poll_ms = 35;
-  int32 max_poll_ms = 36;
+  int64 created_at_ms = 40;
+  int64 polls_total = 41;
+  int64 polls_success = 42;
+  int64 polls_failed = 43;
+  int32 avg_poll_ms = 44;
+  int32 min_poll_ms = 45;
+  int32 max_poll_ms = 46;
   
-  // Protocol-specific config
+  // Protocol config (in long_format or /config sub-path)
   oneof protocol_config {
     SNMPTargetConfig snmp = 50;
     // Future: HTTPTargetConfig http = 51;
+    // Future: ICMPTargetConfig icmp = 52;
   }
 }
 
@@ -166,7 +189,7 @@ message Target {
 
 message SNMPTargetConfig {
   string host = 1;
-  uint32 port = 2;
+  uint32 port = 2;                    // Default 161
   string oid = 3;
   uint32 timeout_ms = 4;
   uint32 retries = 5;
@@ -178,16 +201,16 @@ message SNMPTargetConfig {
 }
 
 message SNMPv2cConfig {
-  string community = 1;
+  string community = 1;               // Masked in output: "pub***"
 }
 
 message SNMPv3Config {
   string security_name = 1;
-  string security_level = 2;    // "noAuthNoPriv", "authNoPriv", "authPriv"
-  string auth_protocol = 3;     // "MD5", "SHA", "SHA224", "SHA256", "SHA384", "SHA512"
-  string auth_password = 4;
-  string priv_protocol = 5;     // "DES", "AES", "AES192", "AES256"
-  string priv_password = 6;
+  string security_level = 2;          // "noAuthNoPriv", "authNoPriv", "authPriv"
+  string auth_protocol = 3;           // "MD5", "SHA", "SHA256", etc.
+  string auth_password = 4;           // Masked: "****"
+  string priv_protocol = 5;           // "DES", "AES", "AES256", etc.
+  string priv_password = 6;           // Masked: "****"
   string context_name = 7;
 }
 
@@ -196,14 +219,13 @@ message SNMPv3Config {
 // ============================================================================
 
 message CreateTargetRequest {
-  string id = 1;                  // Optional, server generates if empty
+  string id = 1;                      // Optional, auto-generated if empty
   string description = 2;
   repeated string tags = 3;
   bool persistent = 4;
   uint32 interval_ms = 5;
   uint32 buffer_size = 6;
   
-  // Protocol-specific config (exactly one must be set)
   oneof protocol {
     SNMPTargetConfig snmp = 20;
     // Future: HTTPTargetConfig http = 21;
@@ -213,14 +235,14 @@ message CreateTargetRequest {
 message CreateTargetResponse {
   bool ok = 1;
   string target_id = 2;
-  bool created = 3;               // false = joined existing target
+  bool created = 3;                   // false = joined existing
   string message = 4;
 }
 
 message UpdateTargetRequest {
   string target_id = 1;
   
-  // Fields to update (0/empty = don't change)
+  // Fields to update (null/0 = don't change)
   optional string description = 2;
   optional uint32 interval_ms = 3;
   optional uint32 buffer_size = 4;
@@ -231,7 +253,7 @@ message UpdateTargetRequest {
   // Tag operations
   repeated string add_tags = 10;
   repeated string remove_tags = 11;
-  repeated string set_tags = 12;  // If non-empty, replaces all tags
+  repeated string set_tags = 12;      // Replaces all if non-empty
 }
 
 message UpdateTargetResponse {
@@ -242,7 +264,7 @@ message UpdateTargetResponse {
 
 message DeleteTargetRequest {
   string target_id = 1;
-  bool force = 2;                 // Delete even if persistent
+  bool force = 2;                     // Delete even if persistent
 }
 
 message DeleteTargetResponse {
@@ -256,12 +278,13 @@ message DeleteTargetResponse {
 
 message GetHistoryRequest {
   string target_id = 1;
-  uint32 last_n = 2;              // Default: 100
+  uint32 last_n = 2;                  // Default 100
 }
 
 message GetHistoryResponse {
   string target_id = 1;
   repeated Sample samples = 2;
+  int32 total_buffered = 3;           // Total samples in buffer
 }
 
 // ============================================================================
@@ -270,21 +293,23 @@ message GetHistoryResponse {
 
 message SubscribeRequest {
   repeated string target_ids = 1;
-  repeated string tags = 2;       // Subscribe to all targets matching these tags
+  repeated string tags = 2;           // Subscribe to all matching tags
 }
 
 message SubscribeResponse {
   bool ok = 1;
-  repeated string subscribed = 2;
+  repeated string subscribed = 2;     // Actually subscribed target IDs
+  int32 total_subscribed = 3;         // Total subscription count after
 }
 
 message UnsubscribeRequest {
-  repeated string target_ids = 1;  // Empty = unsubscribe all
+  repeated string target_ids = 1;     // Empty = unsubscribe all
 }
 
 message UnsubscribeResponse {
   bool ok = 1;
   repeated string unsubscribed = 2;
+  int32 total_subscribed = 3;         // Remaining subscription count
 }
 
 // ============================================================================
@@ -317,7 +342,7 @@ message RuntimeConfig {
   uint32 default_buffer_size = 3;
   uint32 min_interval_ms = 4;
   
-  // Read-only (set at startup)
+  // Read-only
   int32 poller_workers = 10;
   int32 poller_queue_size = 11;
   uint32 reconnect_window_sec = 12;

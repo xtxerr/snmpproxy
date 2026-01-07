@@ -76,6 +76,34 @@ func (idx *TagIndex) Remove(targetID string) {
 	idx.removeLocked(targetID)
 }
 
+// AddLocked adds a target without acquiring lock (caller must hold parent lock).
+// Used by Indices for atomic multi-index updates.
+func (idx *TagIndex) AddLocked(targetID string, tags []string) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	idx.removeLocked(targetID)
+
+	if len(tags) == 0 {
+		return
+	}
+
+	idx.targetToTags[targetID] = make([]string, len(tags))
+	copy(idx.targetToTags[targetID], tags)
+
+	for _, tag := range tags {
+		idx.addTagLocked(targetID, tag)
+	}
+}
+
+// RemoveLocked removes a target without acquiring lock (caller must hold parent lock).
+// Used by Indices for atomic multi-index updates.
+func (idx *TagIndex) RemoveLocked(targetID string) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.removeLocked(targetID)
+}
+
 // removeLocked removes a target from the index.
 // Caller must hold the write lock.
 func (idx *TagIndex) removeLocked(targetID string) {

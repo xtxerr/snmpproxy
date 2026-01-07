@@ -289,8 +289,9 @@ func (t *Target) ToProto() *pb.Target {
 		State:           t.State,
 		LastPollMs:      t.LastPollMs,
 		LastError:       t.LastError,
+		ErrorCount:      int32(t.ErrCount),
 		SamplesBuffered: int32(t.count),
-		Subscribers:     int32(len(t.Owners)),
+		OwnerCount:      int32(len(t.Owners)),
 		CreatedAtMs:     t.CreatedAt.UnixMilli(),
 		PollsTotal:      t.PollsTotal,
 		PollsSuccess:    t.PollsOK,
@@ -721,6 +722,11 @@ func (p *Poller) dispatchSample(r PollResult) {
 		return
 	}
 
+	// Get old state before writing sample
+	t.mu.RLock()
+	oldState := t.State
+	t.mu.RUnlock()
+
 	t.WriteSample(Sample{
 		TimestampMs: r.TimestampMs,
 		Counter:     r.Counter,
@@ -729,6 +735,16 @@ func (p *Poller) dispatchSample(r PollResult) {
 		Error:       r.Error,
 		PollMs:      r.PollMs,
 	})
+
+	// Get new state after writing sample
+	t.mu.RLock()
+	newState := t.State
+	t.mu.RUnlock()
+
+	// Update state index if state changed
+	if oldState != newState {
+		p.server.UpdateTargetState(r.TargetID, oldState, newState)
+	}
 
 	var subscribedSessions []*Session
 	for _, sess := range p.server.sessions {

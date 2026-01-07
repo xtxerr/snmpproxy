@@ -75,8 +75,10 @@ func (c *Client) Connect() error {
 
 	// Send auth
 	if err := c.wire.Write(&pb.Envelope{
-		Id:      1,
-		Payload: &pb.Envelope_AuthReq{AuthReq: &pb.AuthRequest{Token: c.token}},
+		Id: 1,
+		Payload: &pb.Envelope_AuthReq{
+			AuthReq: &pb.AuthRequest{Token: c.token},
+		},
 	}); err != nil {
 		conn.Close()
 		return fmt.Errorf("send auth: %w", err)
@@ -126,6 +128,11 @@ func (c *Client) Close() {
 // SessionID returns the session ID.
 func (c *Client) SessionID() string {
 	return c.sessionID
+}
+
+// IsConnected returns true if connected.
+func (c *Client) IsConnected() bool {
+	return c.connected.Load()
 }
 
 // OnSample sets the handler for pushed samples.
@@ -203,16 +210,31 @@ func (c *Client) request(env *pb.Envelope) (*pb.Envelope, error) {
 // Browse
 // ============================================================================
 
-// Browse navigates the virtual filesystem.
-func (c *Client) Browse(path string, longFormat bool) (*pb.BrowseResponse, error) {
-	return c.BrowseWithOptions(&pb.BrowseRequest{
-		Path:       path,
-		LongFormat: longFormat,
-	})
+// BrowseOptions contains options for Browse requests.
+type BrowseOptions struct {
+	Path       string
+	LongFormat bool
+	Tags       []string
+	State      string
+	Protocol   string
+	Host       string
+	Limit      int32
+	Cursor     string
 }
 
-// BrowseWithOptions navigates with full options.
-func (c *Client) BrowseWithOptions(req *pb.BrowseRequest) (*pb.BrowseResponse, error) {
+// Browse retrieves information at the given path with optional filters.
+func (c *Client) Browse(opts *BrowseOptions) (*pb.BrowseResponse, error) {
+	req := &pb.BrowseRequest{
+		Path:           opts.Path,
+		LongFormat:     opts.LongFormat,
+		FilterTags:     opts.Tags,
+		FilterState:    opts.State,
+		FilterProtocol: opts.Protocol,
+		FilterHost:     opts.Host,
+		Limit:          opts.Limit,
+		Cursor:         opts.Cursor,
+	}
+
 	resp, err := c.request(&pb.Envelope{
 		Payload: &pb.Envelope_BrowseReq{BrowseReq: req},
 	})
@@ -220,6 +242,14 @@ func (c *Client) BrowseWithOptions(req *pb.BrowseRequest) (*pb.BrowseResponse, e
 		return nil, err
 	}
 	return resp.GetBrowseResp(), nil
+}
+
+// BrowsePath is a convenience method for simple path browsing.
+func (c *Client) BrowsePath(path string, longFormat bool) (*pb.BrowseResponse, error) {
+	return c.Browse(&BrowseOptions{
+		Path:       path,
+		LongFormat: longFormat,
+	})
 }
 
 // ============================================================================
@@ -268,7 +298,7 @@ func (c *Client) DeleteTarget(targetID string, force bool) (*pb.DeleteTargetResp
 // History
 // ============================================================================
 
-// GetHistory gets historical samples for a target.
+// GetHistory retrieves sample history for a target.
 func (c *Client) GetHistory(targetID string, lastN uint32) (*pb.GetHistoryResponse, error) {
 	resp, err := c.request(&pb.Envelope{
 		Payload: &pb.Envelope_GetHistoryReq{
@@ -288,13 +318,8 @@ func (c *Client) GetHistory(targetID string, lastN uint32) (*pb.GetHistoryRespon
 // Subscriptions
 // ============================================================================
 
-// Subscribe subscribes to live samples by target IDs.
-func (c *Client) Subscribe(targetIDs []string) (*pb.SubscribeResponse, error) {
-	return c.SubscribeWithTags(targetIDs, nil)
-}
-
-// SubscribeWithTags subscribes to live samples by target IDs and/or tags.
-func (c *Client) SubscribeWithTags(targetIDs, tags []string) (*pb.SubscribeResponse, error) {
+// Subscribe subscribes to target samples by ID and/or tags.
+func (c *Client) Subscribe(targetIDs []string, tags []string) (*pb.SubscribeResponse, error) {
 	resp, err := c.request(&pb.Envelope{
 		Payload: &pb.Envelope_SubscribeReq{
 			SubscribeReq: &pb.SubscribeRequest{
@@ -309,12 +334,13 @@ func (c *Client) SubscribeWithTags(targetIDs, tags []string) (*pb.SubscribeRespo
 	return resp.GetSubscribeResp(), nil
 }
 
-// Unsubscribe unsubscribes from live samples.
-// Empty targetIDs means unsubscribe from all.
+// Unsubscribe unsubscribes from targets.
 func (c *Client) Unsubscribe(targetIDs []string) (*pb.UnsubscribeResponse, error) {
 	resp, err := c.request(&pb.Envelope{
 		Payload: &pb.Envelope_UnsubscribeReq{
-			UnsubscribeReq: &pb.UnsubscribeRequest{TargetIds: targetIDs},
+			UnsubscribeReq: &pb.UnsubscribeRequest{
+				TargetIds: targetIDs,
+			},
 		},
 	})
 	if err != nil {
@@ -327,10 +353,12 @@ func (c *Client) Unsubscribe(targetIDs []string) (*pb.UnsubscribeResponse, error
 // Config
 // ============================================================================
 
-// GetConfig returns the current runtime configuration.
+// GetConfig retrieves the runtime configuration.
 func (c *Client) GetConfig() (*pb.RuntimeConfig, error) {
 	resp, err := c.request(&pb.Envelope{
-		Payload: &pb.Envelope_GetConfigReq{GetConfigReq: &pb.GetConfigRequest{}},
+		Payload: &pb.Envelope_GetConfigReq{
+			GetConfigReq: &pb.GetConfigRequest{},
+		},
 	})
 	if err != nil {
 		return nil, err

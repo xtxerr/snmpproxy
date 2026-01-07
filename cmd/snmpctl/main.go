@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/c-bata/go-prompt"
 	"github.com/xtxerr/snmpproxy/internal/client"
 	pb "github.com/xtxerr/snmpproxy/internal/proto"
 )
@@ -21,9 +22,11 @@ var (
 	token         = flag.String("token", "", "auth token (or SNMPPROXY_TOKEN env)")
 	noTLS         = flag.Bool("no-tls", false, "disable TLS")
 	tlsSkipVerify = flag.Bool("tls-skip-verify", false, "skip TLS certificate verification")
+	noPrompt      = flag.Bool("no-prompt", false, "disable interactive prompt (use basic readline)")
 )
 
 var cli *client.Client
+var completer *Completer
 
 func main() {
 	flag.Parse()
@@ -53,15 +56,22 @@ func main() {
 
 	cli.OnSample(handleSample)
 
+	completer = NewCompleter(cli)
+
 	printHelp()
-	interactive()
+	
+	if *noPrompt {
+		interactiveBasic()
+	} else {
+		interactivePrompt()
+	}
 }
 
 func handleSample(s *pb.Sample) {
 	ts := time.UnixMilli(s.TimestampMs).Format("15:04:05.000")
 	if s.Valid {
 		if s.Text != "" {
-			fmt.Printf("[%s] %s: %s\n", ts, s.TargetId, s.Text)
+			fmt.Printf("[%s] %s: %s (%dms)\n", ts, s.TargetId, s.Text, s.PollMs)
 		} else {
 			fmt.Printf("[%s] %s: %d (%dms)\n", ts, s.TargetId, s.Counter, s.PollMs)
 		}
@@ -71,53 +81,142 @@ func handleSample(s *pb.Sample) {
 }
 
 func printHelp() {
-	fmt.Println("Commands:")
-	fmt.Println()
-	fmt.Println("  ls [path] [-l]         List/browse (targets, server, session)")
-	fmt.Println()
-	fmt.Println("  add snmp <host> <oid> [options]")
-	fmt.Println("      --id <name>        Target ID (auto-generated if omitted)")
-	fmt.Println("      --desc <text>      Description")
-	fmt.Println("      --tag <path>       Tag path (repeatable)")
-	fmt.Println("      --interval <ms>    Poll interval (default: 1000)")
-	fmt.Println("      --persistent       Make target persistent")
-	fmt.Println("      --community <str>  SNMPv2c community (default: public)")
-	fmt.Println("      --v3               Use SNMPv3")
-	fmt.Println("      --user <name>      v3 security name")
-	fmt.Println("      --level <level>    v3: noAuthNoPriv, authNoPriv, authPriv")
-	fmt.Println("      --auth-proto <p>   v3: MD5, SHA, SHA256, etc.")
-	fmt.Println("      --auth-pass <p>    v3 auth password")
-	fmt.Println("      --priv-proto <p>   v3: DES, AES, AES256, etc.")
-	fmt.Println("      --priv-pass <p>    v3 priv password")
-	fmt.Println()
-	fmt.Println("  rm <target-id>         Remove target (or leave ownership)")
-	fmt.Println("  rm -f <target-id>      Force delete (even if persistent)")
-	fmt.Println()
-	fmt.Println("  set <target-id> [options]")
-	fmt.Println("      --desc <text>      Set description")
-	fmt.Println("      --interval <ms>    Set poll interval")
-	fmt.Println("      --buffer <size>    Set buffer size")
-	fmt.Println("      --tag +<path>      Add tag")
-	fmt.Println("      --tag -<path>      Remove tag")
-	fmt.Println("      --tag <path>       Set tags (replaces all)")
-	fmt.Println("      --persistent       Make persistent")
-	fmt.Println("      --no-persistent    Remove persistent flag")
-	fmt.Println()
-	fmt.Println("  history <target> [n]   Show last n samples (default: 10)")
-	fmt.Println()
-	fmt.Println("  sub <targets...>       Subscribe to live updates")
-	fmt.Println("  sub --tag <path>       Subscribe by tag")
-	fmt.Println("  unsub [targets...]     Unsubscribe (all if none specified)")
-	fmt.Println()
-	fmt.Println("  config                 Show runtime config")
-	fmt.Println("  config set <key> <val> Set config value")
-	fmt.Println()
-	fmt.Println("  help                   Show this help")
-	fmt.Println("  quit                   Exit")
-	fmt.Println()
+	fmt.Println(`Commands:
+
+  ls [path] [flags]           Browse paths
+    Paths:
+      /                       Root
+      /targets                All targets
+      /targets/<id>           Target details
+      /targets/<id>/config    Target config
+      /targets/<id>/stats     Target statistics
+      /targets/<id>/history   Sample history
+      /tags                   Tag hierarchy
+      /tags/<path>            Sub-tags and targets
+      /server                 Server info
+      /server/status          Server status
+      /server/config          Runtime config
+      /server/sessions        All sessions
+      /session                Current session
+      /session/owned          Owned targets
+      /session/subscribed     Subscribed targets
+    Flags:
+      -l, --long              Extended details
+      --tag=X                 Filter by tag (repeatable)
+      --state=X               Filter: polling, unreachable, error
+      --protocol=X            Filter: snmp, http, icmp
+      --host=X                Filter by host (glob: 192.168.*)
+      --limit=N               Max results (default 100)
+      --cursor=X              Pagination cursor
+      --json                  JSON output
+
+  add snmp <host> <oid> [flags]
+    --id=X                    Custom target ID
+    --desc=X                  Description
+    --tag=X                   Tag (repeatable)
+    --interval=N              Poll interval ms (default 1000)
+    --buffer=N                Buffer size (default 3600)
+    --persistent              Persistent target
+    SNMPv2c:
+      --community=X           Community (default: public)
+    SNMPv3:
+      --v3                    Use SNMPv3
+      --user=X                Security name
+      --level=X               noAuthNoPriv, authNoPriv, authPriv
+      --auth-proto=X          MD5, SHA, SHA256, etc.
+      --auth-pass=X           Auth password
+      --priv-proto=X          DES, AES, AES256, etc.
+      --priv-pass=X           Privacy password
+
+  set <target-id> [flags]
+    --desc=X                  Set description
+    --interval=N              Set poll interval
+    --buffer=N                Set buffer size
+    --timeout=N               Set SNMP timeout
+    --retries=N               Set SNMP retries
+    --persistent              Mark as persistent
+    --no-persistent           Remove persistent flag
+    --tag +X                  Add tag
+    --tag -X                  Remove tag
+    --tag X                   Set tags (replace all)
+
+  rm <target-id> [-f]         Delete target (-f for force)
+
+  history <target-id> [n]     Show last n samples (default 10)
+
+  sub <target-id>... [--tag=X]  Subscribe to targets
+  unsub [target-id]...          Unsubscribe (all if no args)
+
+  config                      Show runtime config
+  config set <key> <value>    Set config value
+    Keys: timeout, retries, buffer, min-interval
+
+  help                        Show this help
+  quit                        Exit
+`)
 }
 
-func interactive() {
+// interactivePrompt uses go-prompt for tab completion and history.
+func interactivePrompt() {
+	p := prompt.New(
+		executor,
+		completer.Complete,
+		prompt.OptionPrefix("> "),
+		prompt.OptionTitle("snmpctl"),
+		prompt.OptionPrefixTextColor(prompt.Cyan),
+		prompt.OptionPreviewSuggestionTextColor(prompt.DarkGray),
+		prompt.OptionSelectedSuggestionBGColor(prompt.DarkBlue),
+		prompt.OptionSuggestionBGColor(prompt.DarkGray),
+		prompt.OptionMaxSuggestion(10),
+		prompt.OptionShowCompletionAtStart(),
+	)
+	p.Run()
+}
+
+func executor(input string) {
+	line := strings.TrimSpace(input)
+	if line == "" {
+		return
+	}
+
+	args := parseArgs(line)
+	if len(args) == 0 {
+		return
+	}
+
+	cmd := strings.ToLower(args[0])
+	cmdArgs := args[1:]
+
+	switch cmd {
+	case "ls", "l", "list":
+		cmdLs(cmdArgs)
+	case "add", "a":
+		cmdAdd(cmdArgs)
+	case "set", "s":
+		cmdSet(cmdArgs)
+	case "rm", "del", "delete":
+		cmdRm(cmdArgs)
+	case "history", "hist", "h":
+		cmdHistory(cmdArgs)
+	case "sub", "subscribe":
+		cmdSub(cmdArgs)
+	case "unsub", "unsubscribe":
+		cmdUnsub(cmdArgs)
+	case "config", "cfg":
+		cmdConfig(cmdArgs)
+	case "help", "?":
+		printHelp()
+	case "quit", "exit", "q":
+		cli.Close()
+		fmt.Println("Goodbye!")
+		os.Exit(0)
+	default:
+		fmt.Printf("Unknown command: %s (type 'help' for commands)\n", cmd)
+	}
+}
+
+// interactiveBasic uses basic readline without completion.
+func interactiveBasic() {
 	scanner := bufio.NewScanner(os.Stdin)
 	fmt.Print("> ")
 
@@ -140,18 +239,18 @@ func interactive() {
 		switch cmd {
 		case "ls", "l", "list":
 			cmdLs(cmdArgs)
-		case "add", "create":
+		case "add", "a":
 			cmdAdd(cmdArgs)
-		case "rm", "del", "delete", "remove":
-			cmdRm(cmdArgs)
-		case "set", "update":
+		case "set", "s":
 			cmdSet(cmdArgs)
+		case "rm", "del", "delete":
+			cmdRm(cmdArgs)
 		case "history", "hist", "h":
 			cmdHistory(cmdArgs)
 		case "sub", "subscribe":
-			cmdSubscribe(cmdArgs)
+			cmdSub(cmdArgs)
 		case "unsub", "unsubscribe":
-			cmdUnsubscribe(cmdArgs)
+			cmdUnsub(cmdArgs)
 		case "config", "cfg":
 			cmdConfig(cmdArgs)
 		case "help", "?":
@@ -160,7 +259,7 @@ func interactive() {
 			cli.Close()
 			return
 		default:
-			fmt.Printf("Unknown command: %s (try 'help')\n", cmd)
+			fmt.Printf("Unknown command: %s (type 'help' for commands)\n", cmd)
 		}
 
 		fmt.Print("> ")
@@ -196,78 +295,203 @@ func parseArgs(line string) []string {
 // ============================================================================
 
 func cmdLs(args []string) {
-	path := ""
-	longFormat := false
+	opts := &client.BrowseOptions{
+		Path:  "/",
+		Limit: 100,
+	}
+
+	jsonOutput := false
 
 	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "-l", "--long":
-			longFormat = true
-		default:
-			if !strings.HasPrefix(args[i], "-") {
-				path = args[i]
+		arg := args[i]
+
+		switch {
+		case arg == "-l" || arg == "--long":
+			opts.LongFormat = true
+		case strings.HasPrefix(arg, "--tag="):
+			opts.Tags = append(opts.Tags, strings.TrimPrefix(arg, "--tag="))
+		case strings.HasPrefix(arg, "--state="):
+			opts.State = strings.TrimPrefix(arg, "--state=")
+		case strings.HasPrefix(arg, "--protocol="):
+			opts.Protocol = strings.TrimPrefix(arg, "--protocol=")
+		case strings.HasPrefix(arg, "--host="):
+			opts.Host = strings.TrimPrefix(arg, "--host=")
+		case strings.HasPrefix(arg, "--limit="):
+			if v, err := strconv.Atoi(strings.TrimPrefix(arg, "--limit=")); err == nil {
+				opts.Limit = int32(v)
+			}
+		case strings.HasPrefix(arg, "--cursor="):
+			opts.Cursor = strings.TrimPrefix(arg, "--cursor=")
+		case arg == "--json":
+			jsonOutput = true
+		case !strings.HasPrefix(arg, "-"):
+			opts.Path = arg
+			if !strings.HasPrefix(opts.Path, "/") {
+				opts.Path = "/" + opts.Path
 			}
 		}
 	}
 
-	resp, err := cli.Browse(path, longFormat)
+	resp, err := cli.Browse(opts)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
 
-	printBrowseResponse(resp, longFormat)
+	if jsonOutput {
+		printBrowseJSON(resp)
+		return
+	}
+
+	printBrowseResult(resp, opts.LongFormat)
 }
 
-func printBrowseResponse(resp *pb.BrowseResponse, longFormat bool) {
+func printBrowseResult(resp *pb.BrowseResponse, longFormat bool) {
 	if len(resp.Nodes) == 0 {
 		fmt.Println("(empty)")
 		return
 	}
 
-	for _, node := range resp.Nodes {
-		switch node.Type {
+	// Separate directories and targets
+	var dirs, targets, infos []*pb.BrowseNode
+	for _, n := range resp.Nodes {
+		switch n.Type {
 		case pb.NodeType_NODE_DIRECTORY:
-			if node.TargetCount > 0 {
-				fmt.Printf("%s/\t\t(%d targets)\n", node.Name, node.TargetCount)
-			} else {
-				fmt.Printf("%s/\n", node.Name)
-			}
-
+			dirs = append(dirs, n)
 		case pb.NodeType_NODE_TARGET:
-			if longFormat && node.Target != nil {
-				t := node.Target
-				host := ""
-				if snmp := t.GetSnmp(); snmp != nil {
-					host = snmp.Host
-				}
-				persistent := ""
-				if t.Persistent {
-					persistent = " [P]"
-				}
-				desc := t.Description
-				if len(desc) > 30 {
-					desc = desc[:27] + "..."
-				}
-				fmt.Printf("[%s]  %-15s  %-12s  %s%s\n", node.Name, host, t.State, desc, persistent)
-			} else {
-				fmt.Printf("[%s]\n", node.Name)
-			}
-
+			targets = append(targets, n)
 		case pb.NodeType_NODE_INFO:
-			if len(node.Info) > 0 {
-				keys := make([]string, 0, len(node.Info))
-				for k := range node.Info {
-					keys = append(keys, k)
-				}
-				sort.Strings(keys)
-
-				for _, k := range keys {
-					fmt.Printf("  %-20s %s\n", k+":", node.Info[k])
-				}
-			}
+			infos = append(infos, n)
 		}
 	}
+
+	// Print directories
+	for _, n := range dirs {
+		if n.TargetCount > 0 {
+			fmt.Printf("%-20s %d targets\n", n.Name+"/", n.TargetCount)
+		} else if n.Description != "" {
+			fmt.Printf("%-20s %s\n", n.Name+"/", n.Description)
+		} else {
+			fmt.Printf("%s/\n", n.Name)
+		}
+	}
+
+	// Print targets
+	if len(targets) > 0 {
+		if longFormat {
+			printTargetsLong(targets)
+		} else {
+			printTargetsShort(targets)
+		}
+	}
+
+	// Print info nodes
+	for _, n := range infos {
+		if len(n.Info) > 0 {
+			printInfo(n.Name, n.Info)
+		} else if n.Description != "" {
+			fmt.Printf("%-20s %s\n", n.Name, n.Description)
+		}
+	}
+
+	// Pagination info
+	if resp.HasMore {
+		fmt.Printf("\n--more-- (cursor: %s)\n", resp.NextCursor)
+	}
+	if resp.TotalCount > 0 && int(resp.TotalCount) > len(resp.Nodes) {
+		fmt.Printf("Showing %d of %d\n", len(resp.Nodes), resp.TotalCount)
+	}
+}
+
+func printTargetsShort(nodes []*pb.BrowseNode) {
+	for _, n := range nodes {
+		desc := n.Description
+		if desc == "" && n.Target != nil {
+			desc = n.Target.State
+		}
+		fmt.Printf("%-12s %s\n", n.Name, desc)
+	}
+}
+
+func printTargetsLong(nodes []*pb.BrowseNode) {
+	fmt.Printf("%-10s %-18s %-12s %-10s %-8s %s\n",
+		"ID", "Host", "State", "Interval", "Buffer", "Description")
+	fmt.Println(strings.Repeat("-", 80))
+
+	for _, n := range nodes {
+		t := n.Target
+		if t == nil {
+			fmt.Printf("%-10s (no details)\n", n.Name)
+			continue
+		}
+
+		host := ""
+		if snmpCfg := t.GetSnmp(); snmpCfg != nil {
+			host = fmt.Sprintf("%s:%d", snmpCfg.Host, snmpCfg.Port)
+		}
+
+		buffer := fmt.Sprintf("%d/%d", t.SamplesBuffered, t.BufferSize)
+		interval := fmt.Sprintf("%dms", t.IntervalMs)
+
+		persistent := ""
+		if t.Persistent {
+			persistent = " [P]"
+		}
+
+		fmt.Printf("%-10s %-18s %-12s %-10s %-8s %s%s\n",
+			truncate(t.Id, 10),
+			truncate(host, 18),
+			t.State,
+			interval,
+			buffer,
+			truncate(t.Description, 20),
+			persistent)
+	}
+}
+
+func printInfo(name string, info map[string]string) {
+	if name != "" {
+		fmt.Printf("=== %s ===\n", name)
+	}
+
+	// Sort keys for consistent output
+	keys := make([]string, 0, len(info))
+	for k := range info {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	maxKeyLen := 0
+	for _, k := range keys {
+		if len(k) > maxKeyLen {
+			maxKeyLen = len(k)
+		}
+	}
+
+	for _, k := range keys {
+		fmt.Printf("  %-*s  %s\n", maxKeyLen, k+":", info[k])
+	}
+}
+
+func printBrowseJSON(resp *pb.BrowseResponse) {
+	fmt.Printf("{\n")
+	fmt.Printf("  \"path\": %q,\n", resp.Path)
+	fmt.Printf("  \"total_count\": %d,\n", resp.TotalCount)
+	fmt.Printf("  \"has_more\": %v,\n", resp.HasMore)
+	if resp.NextCursor != "" {
+		fmt.Printf("  \"next_cursor\": %q,\n", resp.NextCursor)
+	}
+	fmt.Printf("  \"nodes\": [\n")
+	for i, n := range resp.Nodes {
+		comma := ","
+		if i == len(resp.Nodes)-1 {
+			comma = ""
+		}
+		fmt.Printf("    {\"name\": %q, \"type\": %q, \"description\": %q}%s\n",
+			n.Name, n.Type.String(), n.Description, comma)
+	}
+	fmt.Printf("  ]\n")
+	fmt.Printf("}\n")
 }
 
 // ============================================================================
@@ -276,141 +500,97 @@ func printBrowseResponse(resp *pb.BrowseResponse, longFormat bool) {
 
 func cmdAdd(args []string) {
 	if len(args) < 3 || args[0] != "snmp" {
-		fmt.Println("Usage: add snmp <host> <oid> [options]")
+		fmt.Println("Usage: add snmp <host> <oid> [flags]")
 		return
 	}
 
 	host := args[1]
 	oid := args[2]
 
-	// Defaults
-	var id, desc, community string
-	var tags []string
-	var interval, port, bufferSize uint32
-	var persistent, useV3 bool
-	var securityName, securityLevel, authProto, authPass, privProto, privPass string
-
-	community = "public"
-
-	// Parse options
-	for i := 3; i < len(args); i++ {
-		switch args[i] {
-		case "--id":
-			if i+1 < len(args) {
-				i++
-				id = args[i]
-			}
-		case "--desc", "--description":
-			if i+1 < len(args) {
-				i++
-				desc = args[i]
-			}
-		case "--tag":
-			if i+1 < len(args) {
-				i++
-				tags = append(tags, args[i])
-			}
-		case "--interval", "-i":
-			if i+1 < len(args) {
-				i++
-				v, _ := strconv.ParseUint(args[i], 10, 32)
-				interval = uint32(v)
-			}
-		case "--port":
-			if i+1 < len(args) {
-				i++
-				v, _ := strconv.ParseUint(args[i], 10, 32)
-				port = uint32(v)
-			}
-		case "--buffer":
-			if i+1 < len(args) {
-				i++
-				v, _ := strconv.ParseUint(args[i], 10, 32)
-				bufferSize = uint32(v)
-			}
-		case "--persistent", "-p":
-			persistent = true
-		case "--community", "-c":
-			if i+1 < len(args) {
-				i++
-				community = args[i]
-			}
-		case "--v3":
-			useV3 = true
-		case "--user", "-u":
-			if i+1 < len(args) {
-				i++
-				securityName = args[i]
-			}
-		case "--level", "-l":
-			if i+1 < len(args) {
-				i++
-				securityLevel = args[i]
-			}
-		case "--auth-proto":
-			if i+1 < len(args) {
-				i++
-				authProto = args[i]
-			}
-		case "--auth-pass":
-			if i+1 < len(args) {
-				i++
-				authPass = args[i]
-			}
-		case "--priv-proto":
-			if i+1 < len(args) {
-				i++
-				privProto = args[i]
-			}
-		case "--priv-pass":
-			if i+1 < len(args) {
-				i++
-				privPass = args[i]
-			}
-		}
-	}
-
-	if port == 0 {
-		port = 161
-	}
-
 	// Build SNMP config
 	snmpCfg := &pb.SNMPTargetConfig{
 		Host: host,
-		Port: port,
+		Port: 161,
 		Oid:  oid,
 	}
 
+	req := &pb.CreateTargetRequest{
+		IntervalMs: 1000,
+	}
+
+	// Defaults
+	community := "public"
+	useV3 := false
+	var v3 pb.SNMPv3Config
+
+	var tags []string
+
+	for i := 3; i < len(args); i++ {
+		arg := args[i]
+
+		switch {
+		case strings.HasPrefix(arg, "--id="):
+			req.Id = strings.TrimPrefix(arg, "--id=")
+		case strings.HasPrefix(arg, "--desc="):
+			req.Description = strings.TrimPrefix(arg, "--desc=")
+		case strings.HasPrefix(arg, "--tag="):
+			tags = append(tags, strings.TrimPrefix(arg, "--tag="))
+		case strings.HasPrefix(arg, "--interval="):
+			if v, err := strconv.Atoi(strings.TrimPrefix(arg, "--interval=")); err == nil {
+				req.IntervalMs = uint32(v)
+			}
+		case strings.HasPrefix(arg, "--buffer="):
+			if v, err := strconv.Atoi(strings.TrimPrefix(arg, "--buffer=")); err == nil {
+				req.BufferSize = uint32(v)
+			}
+		case arg == "--persistent":
+			req.Persistent = true
+		case strings.HasPrefix(arg, "--community="):
+			community = strings.TrimPrefix(arg, "--community=")
+		case arg == "--v3":
+			useV3 = true
+		case strings.HasPrefix(arg, "--user="):
+			v3.SecurityName = strings.TrimPrefix(arg, "--user=")
+		case strings.HasPrefix(arg, "--level="):
+			v3.SecurityLevel = strings.TrimPrefix(arg, "--level=")
+		case strings.HasPrefix(arg, "--auth-proto="):
+			v3.AuthProtocol = strings.TrimPrefix(arg, "--auth-proto=")
+		case strings.HasPrefix(arg, "--auth-pass="):
+			v3.AuthPassword = strings.TrimPrefix(arg, "--auth-pass=")
+		case strings.HasPrefix(arg, "--priv-proto="):
+			v3.PrivProtocol = strings.TrimPrefix(arg, "--priv-proto=")
+		case strings.HasPrefix(arg, "--priv-pass="):
+			v3.PrivPassword = strings.TrimPrefix(arg, "--priv-pass=")
+		case strings.HasPrefix(arg, "--timeout="):
+			if v, err := strconv.Atoi(strings.TrimPrefix(arg, "--timeout=")); err == nil {
+				snmpCfg.TimeoutMs = uint32(v)
+			}
+		case strings.HasPrefix(arg, "--retries="):
+			if v, err := strconv.Atoi(strings.TrimPrefix(arg, "--retries=")); err == nil {
+				snmpCfg.Retries = uint32(v)
+			}
+		}
+	}
+
+	req.Tags = tags
+
 	if useV3 {
-		if securityName == "" {
+		if v3.SecurityName == "" {
 			fmt.Println("Error: --user required for SNMPv3")
 			return
 		}
-		snmpCfg.Version = &pb.SNMPTargetConfig_V3{
-			V3: &pb.SNMPv3Config{
-				SecurityName:  securityName,
-				SecurityLevel: securityLevel,
-				AuthProtocol:  authProto,
-				AuthPassword:  authPass,
-				PrivProtocol:  privProto,
-				PrivPassword:  privPass,
-			},
+		if v3.SecurityLevel == "" {
+			v3.SecurityLevel = "authPriv"
 		}
+		snmpCfg.Version = &pb.SNMPTargetConfig_V3{V3: &v3}
 	} else {
 		snmpCfg.Version = &pb.SNMPTargetConfig_V2C{
 			V2C: &pb.SNMPv2CConfig{Community: community},
 		}
 	}
 
-	req := &pb.CreateTargetRequest{
-		Id:          id,
-		Description: desc,
-		Tags:        tags,
-		Persistent:  persistent,
-		IntervalMs:  interval,
-		BufferSize:  bufferSize,
-		Protocol:    &pb.CreateTargetRequest_Snmp{Snmp: snmpCfg},
-	}
+	// Set the oneof protocol field
+	req.Protocol = &pb.CreateTargetRequest_Snmp{Snmp: snmpCfg}
 
 	resp, err := cli.CreateTarget(req)
 	if err != nil {
@@ -426,119 +606,96 @@ func cmdAdd(args []string) {
 }
 
 // ============================================================================
-// rm command
-// ============================================================================
-
-func cmdRm(args []string) {
-	if len(args) < 1 {
-		fmt.Println("Usage: rm [-f] <target-id>")
-		return
-	}
-
-	var targetID string
-	var force bool
-
-	for _, arg := range args {
-		switch arg {
-		case "-f", "--force":
-			force = true
-		default:
-			if !strings.HasPrefix(arg, "-") {
-				targetID = arg
-			}
-		}
-	}
-
-	if targetID == "" {
-		fmt.Println("Usage: rm [-f] <target-id>")
-		return
-	}
-
-	resp, err := cli.DeleteTarget(targetID, force)
-	if err != nil {
-		fmt.Printf("Error: %v\n", err)
-		return
-	}
-
-	fmt.Printf("OK: %s\n", resp.Message)
-}
-
-// ============================================================================
 // set command
 // ============================================================================
 
 func cmdSet(args []string) {
 	if len(args) < 1 {
-		fmt.Println("Usage: set <target-id> [options]")
+		fmt.Println("Usage: set <target-id> [flags]")
 		return
 	}
 
 	targetID := args[0]
 	req := &pb.UpdateTargetRequest{TargetId: targetID}
 
-	var addTags, removeTags, setTags []string
-
 	for i := 1; i < len(args); i++ {
-		switch args[i] {
-		case "--desc", "--description":
-			if i+1 < len(args) {
-				i++
-				req.Description = &args[i]
-			}
-		case "--interval", "-i":
-			if i+1 < len(args) {
-				i++
-				v, _ := strconv.ParseUint(args[i], 10, 32)
+		arg := args[i]
+
+		switch {
+		case strings.HasPrefix(arg, "--desc="):
+			desc := strings.TrimPrefix(arg, "--desc=")
+			req.Description = &desc
+		case strings.HasPrefix(arg, "--interval="):
+			if v, err := strconv.ParseUint(strings.TrimPrefix(arg, "--interval="), 10, 32); err == nil {
 				val := uint32(v)
 				req.IntervalMs = &val
 			}
-		case "--buffer", "-b":
-			if i+1 < len(args) {
-				i++
-				v, _ := strconv.ParseUint(args[i], 10, 32)
+		case strings.HasPrefix(arg, "--buffer="):
+			if v, err := strconv.ParseUint(strings.TrimPrefix(arg, "--buffer="), 10, 32); err == nil {
 				val := uint32(v)
 				req.BufferSize = &val
 			}
-		case "--timeout":
-			if i+1 < len(args) {
-				i++
-				v, _ := strconv.ParseUint(args[i], 10, 32)
+		case strings.HasPrefix(arg, "--timeout="):
+			if v, err := strconv.ParseUint(strings.TrimPrefix(arg, "--timeout="), 10, 32); err == nil {
 				val := uint32(v)
 				req.TimeoutMs = &val
 			}
-		case "--retries":
-			if i+1 < len(args) {
-				i++
-				v, _ := strconv.ParseUint(args[i], 10, 32)
+		case strings.HasPrefix(arg, "--retries="):
+			if v, err := strconv.ParseUint(strings.TrimPrefix(arg, "--retries="), 10, 32); err == nil {
 				val := uint32(v)
 				req.Retries = &val
 			}
-		case "--persistent", "-p":
+		case arg == "--persistent":
 			val := true
 			req.Persistent = &val
-		case "--no-persistent":
+		case arg == "--no-persistent":
 			val := false
 			req.Persistent = &val
-		case "--tag":
+		case strings.HasPrefix(arg, "--tag"):
+			// --tag +X (add), --tag -X (remove), --tag X (set)
 			if i+1 < len(args) {
 				i++
-				tag := args[i]
-				if strings.HasPrefix(tag, "+") {
-					addTags = append(addTags, tag[1:])
-				} else if strings.HasPrefix(tag, "-") {
-					removeTags = append(removeTags, tag[1:])
+				tagVal := args[i]
+				if strings.HasPrefix(tagVal, "+") {
+					req.AddTags = append(req.AddTags, strings.TrimPrefix(tagVal, "+"))
+				} else if strings.HasPrefix(tagVal, "-") {
+					req.RemoveTags = append(req.RemoveTags, strings.TrimPrefix(tagVal, "-"))
 				} else {
-					setTags = append(setTags, tag)
+					req.SetTags = append(req.SetTags, tagVal)
 				}
 			}
 		}
 	}
 
-	req.AddTags = addTags
-	req.RemoveTags = removeTags
-	req.SetTags = setTags
-
 	resp, err := cli.UpdateTarget(req)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Updated: %s\n", resp.Message)
+}
+
+// ============================================================================
+// rm command
+// ============================================================================
+
+func cmdRm(args []string) {
+	if len(args) < 1 {
+		fmt.Println("Usage: rm <target-id> [-f]")
+		return
+	}
+
+	targetID := args[0]
+	force := false
+
+	for _, arg := range args[1:] {
+		if arg == "-f" || arg == "--force" {
+			force = true
+		}
+	}
+
+	resp, err := cli.DeleteTarget(targetID, force)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
@@ -560,8 +717,7 @@ func cmdHistory(args []string) {
 	targetID := args[0]
 	count := uint32(10)
 	if len(args) > 1 {
-		v, _ := strconv.ParseUint(args[1], 10, 32)
-		if v > 0 {
+		if v, err := strconv.Atoi(args[1]); err == nil {
 			count = uint32(v)
 		}
 	}
@@ -577,8 +733,9 @@ func cmdHistory(args []string) {
 		return
 	}
 
-	fmt.Printf("%-24s  %-20s  %-6s  %s\n", "Timestamp", "Value", "Valid", "PollMs")
-	fmt.Println(strings.Repeat("-", 65))
+	fmt.Printf("Showing %d of %d buffered samples:\n\n", len(resp.Samples), resp.TotalBuffered)
+	fmt.Printf("%-24s %-20s %-6s %-8s\n", "Timestamp", "Value", "Valid", "PollMs")
+	fmt.Println(strings.Repeat("-", 60))
 
 	for _, s := range resp.Samples {
 		ts := time.UnixMilli(s.TimestampMs).Format("2006-01-02 15:04:05.000")
@@ -587,64 +744,55 @@ func cmdHistory(args []string) {
 			valid = "✗"
 		}
 		if s.Text != "" {
-			fmt.Printf("%-24s  %-20s  %-6s  %d\n", ts, truncate(s.Text, 20), valid, s.PollMs)
+			fmt.Printf("%-24s %-20s %-6s %-8d\n", ts, truncate(s.Text, 20), valid, s.PollMs)
 		} else {
-			fmt.Printf("%-24s  %-20d  %-6s  %d\n", ts, s.Counter, valid, s.PollMs)
+			fmt.Printf("%-24s %-20d %-6s %-8d\n", ts, s.Counter, valid, s.PollMs)
 		}
 	}
 }
 
 // ============================================================================
-// subscribe/unsubscribe commands
+// sub/unsub commands
 // ============================================================================
 
-func cmdSubscribe(args []string) {
-	var targetIDs []string
-	var tags []string
-
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--tag", "-t":
-			if i+1 < len(args) {
-				i++
-				tags = append(tags, args[i])
-			}
-		default:
-			if !strings.HasPrefix(args[i], "-") {
-				targetIDs = append(targetIDs, args[i])
-			}
-		}
-	}
-
-	if len(targetIDs) == 0 && len(tags) == 0 {
-		fmt.Println("Usage: sub <target-id>... or sub --tag <path>")
+func cmdSub(args []string) {
+	if len(args) < 1 {
+		fmt.Println("Usage: sub <target-id>... [--tag=X]")
 		return
 	}
 
-	resp, err := cli.SubscribeWithTags(targetIDs, tags)
+	var ids, tags []string
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--tag=") {
+			tags = append(tags, strings.TrimPrefix(arg, "--tag="))
+		} else {
+			ids = append(ids, arg)
+		}
+	}
+
+	resp, err := cli.Subscribe(ids, tags)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
 
-	if len(resp.Subscribed) == 0 {
-		fmt.Println("No targets matched")
-	} else {
-		fmt.Printf("Subscribed: %v\n", resp.Subscribed)
+	fmt.Printf("Subscribed to %d targets (total: %d)\n", len(resp.Subscribed), resp.TotalSubscribed)
+	if len(resp.Subscribed) > 0 && len(resp.Subscribed) <= 10 {
+		fmt.Printf("  %s\n", strings.Join(resp.Subscribed, ", "))
 	}
 }
 
-func cmdUnsubscribe(args []string) {
+func cmdUnsub(args []string) {
 	resp, err := cli.Unsubscribe(args)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
 
-	if len(resp.Unsubscribed) == 0 {
-		fmt.Println("Unsubscribed from all")
+	if len(args) == 0 {
+		fmt.Printf("Unsubscribed from all (remaining: %d)\n", resp.TotalSubscribed)
 	} else {
-		fmt.Printf("Unsubscribed: %v\n", resp.Unsubscribed)
+		fmt.Printf("Unsubscribed from %d targets (remaining: %d)\n", len(resp.Unsubscribed), resp.TotalSubscribed)
 	}
 }
 
@@ -664,20 +812,22 @@ func cmdConfig(args []string) {
 		return
 	}
 
-	fmt.Println("=== Server Info ===")
-	fmt.Printf("  %-20s %s\n", "version:", cfg.Version)
-	fmt.Printf("  %-20s %s\n", "uptime:", formatDuration(time.Duration(cfg.UptimeMs)*time.Millisecond))
+	fmt.Println("=== Runtime Configuration ===")
 	fmt.Println()
-	fmt.Println("=== Runtime Config (changeable) ===")
-	fmt.Printf("  %-20s %d\n", "default_timeout_ms:", cfg.DefaultTimeoutMs)
-	fmt.Printf("  %-20s %d\n", "default_retries:", cfg.DefaultRetries)
-	fmt.Printf("  %-20s %d\n", "default_buffer_size:", cfg.DefaultBufferSize)
-	fmt.Printf("  %-20s %d\n", "min_interval_ms:", cfg.MinIntervalMs)
+	fmt.Println("Changeable:")
+	fmt.Printf("  default_timeout_ms:  %d\n", cfg.DefaultTimeoutMs)
+	fmt.Printf("  default_retries:     %d\n", cfg.DefaultRetries)
+	fmt.Printf("  default_buffer_size: %d\n", cfg.DefaultBufferSize)
+	fmt.Printf("  min_interval_ms:     %d\n", cfg.MinIntervalMs)
 	fmt.Println()
-	fmt.Println("=== Static Config (read-only) ===")
-	fmt.Printf("  %-20s %d\n", "poller_workers:", cfg.PollerWorkers)
-	fmt.Printf("  %-20s %d\n", "poller_queue_size:", cfg.PollerQueueSize)
-	fmt.Printf("  %-20s %d sec\n", "reconnect_window:", cfg.ReconnectWindowSec)
+	fmt.Println("Read-only:")
+	fmt.Printf("  poller_workers:      %d\n", cfg.PollerWorkers)
+	fmt.Printf("  poller_queue_size:   %d\n", cfg.PollerQueueSize)
+	fmt.Printf("  reconnect_window:    %d sec\n", cfg.ReconnectWindowSec)
+	fmt.Println()
+	fmt.Println("Server:")
+	fmt.Printf("  version:             %s\n", cfg.Version)
+	fmt.Printf("  uptime:              %s\n", formatDuration(time.Duration(cfg.UptimeMs)*time.Millisecond))
 }
 
 func cmdConfigSet(key, value string) {
@@ -696,11 +846,11 @@ func cmdConfigSet(key, value string) {
 		req.DefaultRetries = &val
 	case "buffer", "default_buffer_size":
 		req.DefaultBufferSize = &val
-	case "min_interval", "min_interval_ms":
+	case "min-interval", "min_interval_ms":
 		req.MinIntervalMs = &val
 	default:
 		fmt.Printf("Unknown config key: %s\n", key)
-		fmt.Println("Valid keys: timeout, retries, buffer, min_interval")
+		fmt.Println("Valid keys: timeout, retries, buffer, min-interval")
 		return
 	}
 
@@ -711,7 +861,7 @@ func cmdConfigSet(key, value string) {
 	}
 
 	if resp.Ok {
-		fmt.Printf("Config updated: %s = %d\n", key, val)
+		fmt.Printf("Updated: %s = %d\n", key, val)
 	} else {
 		fmt.Printf("Failed: %s\n", resp.Message)
 	}
