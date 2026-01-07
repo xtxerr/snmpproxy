@@ -232,31 +232,8 @@ func (c *Client) request(env *pb.Envelope) (*pb.Envelope, error) {
 // Browse
 // ============================================================================
 
-// BrowseOptions contains options for Browse requests.
-type BrowseOptions struct {
-	Path       string
-	LongFormat bool
-	Tags       []string
-	State      string
-	Protocol   string
-	Host       string
-	Limit      int32
-	Cursor     string
-}
-
 // Browse retrieves information at the given path with optional filters.
-func (c *Client) Browse(opts *BrowseOptions) (*pb.BrowseResponse, error) {
-	req := &pb.BrowseRequest{
-		Path:           opts.Path,
-		LongFormat:     opts.LongFormat,
-		FilterTags:     opts.Tags,
-		FilterState:    opts.State,
-		FilterProtocol: opts.Protocol,
-		FilterHost:     opts.Host,
-		Limit:          opts.Limit,
-		Cursor:         opts.Cursor,
-	}
-
+func (c *Client) Browse(req *pb.BrowseRequest) (*pb.BrowseResponse, error) {
 	resp, err := c.request(&pb.Envelope{
 		Payload: &pb.Envelope_BrowseReq{BrowseReq: req},
 	})
@@ -268,7 +245,7 @@ func (c *Client) Browse(opts *BrowseOptions) (*pb.BrowseResponse, error) {
 
 // BrowsePath is a convenience method for simple path browsing.
 func (c *Client) BrowsePath(path string, longFormat bool) (*pb.BrowseResponse, error) {
-	return c.Browse(&BrowseOptions{
+	return c.Browse(&pb.BrowseRequest{
 		Path:       path,
 		LongFormat: longFormat,
 	})
