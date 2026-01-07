@@ -194,39 +194,82 @@ func (c *Completer) completePath(partial string) []prompt.Suggest {
 // ============================================================================
 
 func (c *Completer) completeAdd(args []string, text string) []prompt.Suggest {
+	// "add " -> suggest protocol
 	if len(args) == 1 && strings.HasSuffix(text, " ") {
 		return []prompt.Suggest{
 			{Text: "snmp", Description: "Add SNMP target"},
 		}
 	}
 	
+	// "add sn" -> filter protocol
 	if len(args) == 2 && !strings.HasSuffix(text, " ") {
 		return prompt.FilterHasPrefix([]prompt.Suggest{
 			{Text: "snmp", Description: "Add SNMP target"},
 		}, args[1], true)
 	}
 
-	lastArg := args[len(args)-1]
-	
-	// Flag completion
-	if strings.HasPrefix(lastArg, "-") && !strings.HasSuffix(text, " ") {
-		return prompt.FilterHasPrefix(addFlags, lastArg, true)
+	// "add snmp " -> suggest host placeholder
+	if len(args) == 2 && strings.HasSuffix(text, " ") {
+		return []prompt.Suggest{
+			{Text: "<host>", Description: "Target hostname or IP address"},
+		}
 	}
-	
-	// After flags
-	if strings.HasSuffix(text, " ") {
-		return addFlags
+
+	// "add snmp host " -> suggest common OIDs
+	if len(args) == 3 && strings.HasSuffix(text, " ") {
+		return commonOIDs
+	}
+
+	// "add snmp host 1.3..." -> filter OIDs
+	if len(args) == 4 && !strings.HasSuffix(text, " ") {
+		lastArg := args[3]
+		if strings.HasPrefix(lastArg, "1.") || strings.HasPrefix(lastArg, ".1.") {
+			return prompt.FilterHasPrefix(commonOIDs, lastArg, true)
+		}
+	}
+
+	// After host and OID, suggest flags
+	if len(args) >= 4 {
+		lastArg := args[len(args)-1]
+		
+		// Flag completion
+		if strings.HasPrefix(lastArg, "-") && !strings.HasSuffix(text, " ") {
+			return prompt.FilterHasPrefix(addFlags, lastArg, true)
+		}
+		
+		// After flags or args
+		if strings.HasSuffix(text, " ") {
+			return addFlags
+		}
 	}
 
 	return nil
 }
 
+var commonOIDs = []prompt.Suggest{
+	{Text: "1.3.6.1.2.1.1.1.0", Description: "sysDescr - System description"},
+	{Text: "1.3.6.1.2.1.1.3.0", Description: "sysUpTime - System uptime"},
+	{Text: "1.3.6.1.2.1.1.5.0", Description: "sysName - System name"},
+	{Text: "1.3.6.1.2.1.1.6.0", Description: "sysLocation - System location"},
+	{Text: "1.3.6.1.2.1.2.2.1.10", Description: "ifInOctets - Interface input bytes"},
+	{Text: "1.3.6.1.2.1.2.2.1.16", Description: "ifOutOctets - Interface output bytes"},
+	{Text: "1.3.6.1.2.1.31.1.1.1.6", Description: "ifHCInOctets - 64-bit input counter"},
+	{Text: "1.3.6.1.2.1.31.1.1.1.10", Description: "ifHCOutOctets - 64-bit output counter"},
+	{Text: "1.3.6.1.2.1.2.2.1.8", Description: "ifOperStatus - Interface oper status"},
+	{Text: "1.3.6.1.2.1.2.2.1.7", Description: "ifAdminStatus - Interface admin status"},
+	{Text: "1.3.6.1.4.1.9.9.109.1.1.1.1.3", Description: "Cisco CPU 1min"},
+	{Text: "1.3.6.1.4.1.9.9.109.1.1.1.1.4", Description: "Cisco CPU 5min"},
+}
+
 var addFlags = []prompt.Suggest{
+	{Text: "--name=", Description: "User-friendly name"},
 	{Text: "--id=", Description: "Custom target ID"},
 	{Text: "--desc=", Description: "Description"},
 	{Text: "--tag=", Description: "Tag (repeatable)"},
 	{Text: "--interval=", Description: "Poll interval ms"},
 	{Text: "--buffer=", Description: "Buffer size"},
+	{Text: "--timeout=", Description: "SNMP timeout ms"},
+	{Text: "--retries=", Description: "SNMP retries"},
 	{Text: "--persistent", Description: "Mark as persistent"},
 	{Text: "--community=", Description: "SNMPv2c community"},
 	{Text: "--v3", Description: "Use SNMPv3"},
@@ -273,6 +316,7 @@ func (c *Completer) completeSet(args []string, text string) []prompt.Suggest {
 }
 
 var setFlags = []prompt.Suggest{
+	{Text: "--name=", Description: "Change name"},
 	{Text: "--desc=", Description: "Set description"},
 	{Text: "--interval=", Description: "Set poll interval ms"},
 	{Text: "--buffer=", Description: "Set buffer size"},
@@ -281,6 +325,13 @@ var setFlags = []prompt.Suggest{
 	{Text: "--persistent", Description: "Mark as persistent"},
 	{Text: "--no-persistent", Description: "Remove persistent flag"},
 	{Text: "--tag", Description: "Modify tags (+add, -remove, set)"},
+	{Text: "--community=", Description: "Change SNMPv2c community"},
+	{Text: "--user=", Description: "Change SNMPv3 security name"},
+	{Text: "--level=", Description: "Change SNMPv3 level"},
+	{Text: "--auth-proto=", Description: "Change auth protocol"},
+	{Text: "--auth-pass=", Description: "Change auth password"},
+	{Text: "--priv-proto=", Description: "Change priv protocol"},
+	{Text: "--priv-pass=", Description: "Change priv password"},
 }
 
 func (c *Completer) completeTagOperation(partial string) []prompt.Suggest {

@@ -143,18 +143,19 @@ enum NodeType {
 
 message Target {
   // Identity
-  string id = 1;
-  string description = 2;
-  repeated string tags = 3;
-  bool persistent = 4;
-  string protocol = 5;                // "snmp", "http", "icmp"
+  string id = 1;                       // UUID, auto-generated, immutable
+  string name = 2;                     // User-defined, optional, mutable
+  string description = 3;
+  repeated string tags = 4;
+  bool persistent = 5;
+  string protocol = 6;                 // "snmp", "http", "icmp"
   
   // Polling config
   uint32 interval_ms = 10;
   uint32 buffer_size = 11;
   
   // Runtime state
-  string state = 20;                  // "polling", "unreachable", "error"
+  string state = 20;                   // "polling", "unreachable", "error"
   int64 last_poll_ms = 21;
   string last_error = 22;
   int32 error_count = 23;
@@ -163,8 +164,8 @@ message Target {
   // Ownership
   int32 owner_count = 30;
   int32 subscriber_count = 31;
-  repeated string owners = 32;        // Session IDs (in long_format)
-  repeated string subscribers = 33;   // Session IDs (in long_format)
+  repeated string owners = 32;         // Session IDs (in long_format)
+  repeated string subscribers = 33;    // Session IDs (in long_format)
   
   // Statistics
   int64 created_at_ms = 40;
@@ -219,12 +220,13 @@ message SNMPv3Config {
 // ============================================================================
 
 message CreateTargetRequest {
-  string id = 1;                      // Optional, auto-generated if empty
-  string description = 2;
-  repeated string tags = 3;
-  bool persistent = 4;
-  uint32 interval_ms = 5;
-  uint32 buffer_size = 6;
+  string id = 1;                       // Optional, auto-generated if empty
+  string name = 2;                     // Optional, user-friendly name
+  string description = 3;
+  repeated string tags = 4;
+  bool persistent = 5;
+  uint32 interval_ms = 6;
+  uint32 buffer_size = 7;
   
   oneof protocol {
     SNMPTargetConfig snmp = 20;
@@ -235,25 +237,37 @@ message CreateTargetRequest {
 message CreateTargetResponse {
   bool ok = 1;
   string target_id = 2;
-  bool created = 3;                   // false = joined existing
-  string message = 4;
+  string target_name = 3;              // Echo back name (or generated)
+  bool created = 4;                    // false = joined existing
+  string message = 5;
 }
 
 message UpdateTargetRequest {
-  string target_id = 1;
+  string target_id = 1;                // Can be ID or name
   
   // Fields to update (null/0 = don't change)
-  optional string description = 2;
-  optional uint32 interval_ms = 3;
-  optional uint32 buffer_size = 4;
-  optional uint32 timeout_ms = 5;
-  optional uint32 retries = 6;
-  optional bool persistent = 7;
+  optional string name = 2;
+  optional string description = 3;
+  optional uint32 interval_ms = 4;
+  optional uint32 buffer_size = 5;
+  optional bool persistent = 6;
   
   // Tag operations
   repeated string add_tags = 10;
   repeated string remove_tags = 11;
-  repeated string set_tags = 12;      // Replaces all if non-empty
+  repeated string set_tags = 12;       // Replaces all if non-empty
+  
+  // SNMP config updates
+  optional uint32 timeout_ms = 20;
+  optional uint32 retries = 21;
+  optional string community = 22;      // SNMPv2c community
+  // SNMPv3 credentials
+  optional string security_name = 30;
+  optional string security_level = 31;
+  optional string auth_protocol = 32;
+  optional string auth_password = 33;
+  optional string priv_protocol = 34;
+  optional string priv_password = 35;
 }
 
 message UpdateTargetResponse {
@@ -336,19 +350,33 @@ message SetConfigResponse {
 }
 
 message RuntimeConfig {
-  // Changeable at runtime
+  // SNMP defaults (changeable)
   uint32 default_timeout_ms = 1;
   uint32 default_retries = 2;
   uint32 default_buffer_size = 3;
-  uint32 min_interval_ms = 4;
   
-  // Read-only
+  // Limits (changeable)
+  uint32 min_interval_ms = 4;
+  uint32 max_targets = 5;              // 0 = unlimited
+  uint32 max_subscriptions_per_session = 6;
+  
+  // Poller (read-only, set at startup)
   int32 poller_workers = 10;
   int32 poller_queue_size = 11;
-  uint32 reconnect_window_sec = 12;
   
-  // Server info
-  string version = 20;
-  int64 uptime_ms = 21;
-  int64 started_at_ms = 22;
+  // Session (read-only)
+  uint32 auth_timeout_sec = 15;
+  uint32 reconnect_window_sec = 16;
+  
+  // TLS (read-only)
+  bool tls_enabled = 20;
+  string tls_cert_file = 21;           // Path only, not contents
+  
+  // Network (read-only)
+  string listen_address = 25;
+  
+  // Server info (read-only)
+  string version = 30;
+  int64 uptime_ms = 31;
+  int64 started_at_ms = 32;
 }

@@ -32,6 +32,7 @@ type Server struct {
 	sessions    map[string]*Session
 	targets     map[string]*Target
 	targetIndex map[string]string // "host:port/oid" -> targetID
+	nameIndex   map[string]string // name -> targetID (for lookup by name)
 
 	// Runtime config
 	runtimeMu         sync.RWMutex
@@ -176,6 +177,7 @@ func New(cfg *config.Config) *Server {
 		sessions:          make(map[string]*Session),
 		targets:           make(map[string]*Target),
 		targetIndex:       make(map[string]string),
+		nameIndex:         make(map[string]string),
 		indices:           NewIndices(),
 		shutdown:          make(chan struct{}),
 		startedAt:         time.Now(),
@@ -502,16 +504,20 @@ func (srv *Server) handleCreateTarget(sess *Session, id uint64, req *pb.CreateTa
 	if existingID, ok := srv.targetIndex[key]; ok {
 		t := srv.targets[existingID]
 		t.AddOwner(sess.ID)
+		t.mu.RLock()
+		name := t.Name
+		t.mu.RUnlock()
 		srv.mu.Unlock()
 
 		sess.Send(&pb.Envelope{
 			Id: id,
 			Payload: &pb.Envelope_CreateTargetResp{
 				CreateTargetResp: &pb.CreateTargetResponse{
-					Ok:       true,
-					TargetId: existingID,
-					Created:  false,
-					Message:  "joined existing target",
+					Ok:         true,
+					TargetId:   existingID,
+					TargetName: name,
+					Created:    false,
+					Message:    "joined existing target",
 				},
 			},
 		})
@@ -537,6 +543,7 @@ func (srv *Server) handleCreateTarget(sess *Session, id uint64, req *pb.CreateTa
 
 	srv.targets[targetID] = t
 	srv.targetIndex[key] = targetID
+	srv.registerTargetName(targetID, t.Name)
 	srv.mu.Unlock()
 
 	srv.indices.Add(targetID, t.State, t.Protocol, t.Host, t.Tags)
@@ -546,9 +553,10 @@ func (srv *Server) handleCreateTarget(sess *Session, id uint64, req *pb.CreateTa
 		Id: id,
 		Payload: &pb.Envelope_CreateTargetResp{
 			CreateTargetResp: &pb.CreateTargetResponse{
-				Ok:       true,
-				TargetId: targetID,
-				Created:  true,
+				Ok:         true,
+				TargetId:   targetID,
+				TargetName: t.Name,
+				Created:    true,
 			},
 		},
 	})
@@ -557,8 +565,8 @@ func (srv *Server) handleCreateTarget(sess *Session, id uint64, req *pb.CreateTa
 
 func (srv *Server) handleUpdateTarget(sess *Session, id uint64, req *pb.UpdateTargetRequest) {
 	srv.mu.Lock()
-	t, ok := srv.targets[req.TargetId]
-	if !ok {
+	t := srv.resolveTarget(req.TargetId)
+	if t == nil {
 		srv.mu.Unlock()
 		sess.Send(newError(id, ErrInvalidRequest, "target not found"))
 		return
@@ -566,6 +574,8 @@ func (srv *Server) handleUpdateTarget(sess *Session, id uint64, req *pb.UpdateTa
 
 	t.mu.RLock()
 	isOwner := t.Owners[sess.ID] || t.IsConfigTarget()
+	targetID := t.ID
+	oldName := t.Name
 	t.mu.RUnlock()
 
 	if !isOwner {
@@ -575,6 +585,18 @@ func (srv *Server) handleUpdateTarget(sess *Session, id uint64, req *pb.UpdateTa
 	}
 
 	var changes []string
+
+	// Name change
+	if req.Name != nil {
+		newName := *req.Name
+		// Update name index
+		srv.unregisterTargetName(oldName)
+		srv.registerTargetName(targetID, newName)
+		t.mu.Lock()
+		t.Name = newName
+		t.mu.Unlock()
+		changes = append(changes, fmt.Sprintf("name=%s", newName))
+	}
 
 	if req.Description != nil {
 		t.mu.Lock()
@@ -598,31 +620,13 @@ func (srv *Server) handleUpdateTarget(sess *Session, id uint64, req *pb.UpdateTa
 		t.mu.Lock()
 		t.IntervalMs = *req.IntervalMs
 		t.mu.Unlock()
-		srv.poller.UpdateInterval(req.TargetId, *req.IntervalMs)
+		srv.poller.UpdateInterval(targetID, *req.IntervalMs)
 		changes = append(changes, fmt.Sprintf("interval=%dms", *req.IntervalMs))
 	}
 
 	if req.BufferSize != nil && *req.BufferSize > 0 {
 		t.ResizeBuffer(int(*req.BufferSize))
 		changes = append(changes, fmt.Sprintf("buffer=%d", *req.BufferSize))
-	}
-
-	if req.TimeoutMs != nil && *req.TimeoutMs > 0 {
-		t.mu.Lock()
-		if t.SNMP != nil {
-			t.SNMP.TimeoutMs = *req.TimeoutMs
-		}
-		t.mu.Unlock()
-		changes = append(changes, fmt.Sprintf("timeout=%dms", *req.TimeoutMs))
-	}
-
-	if req.Retries != nil && *req.Retries > 0 {
-		t.mu.Lock()
-		if t.SNMP != nil {
-			t.SNMP.Retries = *req.Retries
-		}
-		t.mu.Unlock()
-		changes = append(changes, fmt.Sprintf("retries=%d", *req.Retries))
 	}
 
 	if req.Persistent != nil {
@@ -633,12 +637,58 @@ func (srv *Server) handleUpdateTarget(sess *Session, id uint64, req *pb.UpdateTa
 	}
 
 	if len(req.SetTags) > 0 || len(req.AddTags) > 0 || len(req.RemoveTags) > 0 {
-		newTags := srv.indices.UpdateTags(req.TargetId, req.AddTags, req.RemoveTags, req.SetTags)
+		newTags := srv.indices.UpdateTags(targetID, req.AddTags, req.RemoveTags, req.SetTags)
 		t.mu.Lock()
 		t.Tags = newTags
 		t.mu.Unlock()
 		changes = append(changes, "tags")
 	}
+
+	// SNMP config updates
+	t.mu.Lock()
+	if t.SNMP != nil {
+		if req.TimeoutMs != nil && *req.TimeoutMs > 0 {
+			t.SNMP.TimeoutMs = *req.TimeoutMs
+			changes = append(changes, fmt.Sprintf("timeout=%dms", *req.TimeoutMs))
+		}
+		if req.Retries != nil && *req.Retries > 0 {
+			t.SNMP.Retries = *req.Retries
+			changes = append(changes, fmt.Sprintf("retries=%d", *req.Retries))
+		}
+		if req.Community != nil {
+			if v2c := t.SNMP.GetV2C(); v2c != nil {
+				v2c.Community = *req.Community
+				changes = append(changes, "community")
+			}
+		}
+		if v3 := t.SNMP.GetV3(); v3 != nil {
+			if req.SecurityName != nil {
+				v3.SecurityName = *req.SecurityName
+				changes = append(changes, "security_name")
+			}
+			if req.SecurityLevel != nil {
+				v3.SecurityLevel = *req.SecurityLevel
+				changes = append(changes, "security_level")
+			}
+			if req.AuthProtocol != nil {
+				v3.AuthProtocol = *req.AuthProtocol
+				changes = append(changes, "auth_protocol")
+			}
+			if req.AuthPassword != nil {
+				v3.AuthPassword = *req.AuthPassword
+				changes = append(changes, "auth_password")
+			}
+			if req.PrivProtocol != nil {
+				v3.PrivProtocol = *req.PrivProtocol
+				changes = append(changes, "priv_protocol")
+			}
+			if req.PrivPassword != nil {
+				v3.PrivPassword = *req.PrivPassword
+				changes = append(changes, "priv_password")
+			}
+		}
+	}
+	t.mu.Unlock()
 
 	srv.mu.Unlock()
 
@@ -662,14 +712,16 @@ func (srv *Server) handleUpdateTarget(sess *Session, id uint64, req *pb.UpdateTa
 func (srv *Server) handleDeleteTarget(sess *Session, id uint64, req *pb.DeleteTargetRequest) {
 	srv.mu.Lock()
 
-	t, ok := srv.targets[req.TargetId]
-	if !ok {
+	t := srv.resolveTarget(req.TargetId)
+	if t == nil {
 		srv.mu.Unlock()
 		sess.Send(newError(id, ErrInvalidRequest, "target not found"))
 		return
 	}
 
 	t.mu.RLock()
+	targetID := t.ID
+	name := t.Name
 	isPersistent := t.Persistent
 	isOwner := t.Owners[sess.ID]
 	state := t.State
@@ -686,16 +738,17 @@ func (srv *Server) handleDeleteTarget(sess *Session, id uint64, req *pb.DeleteTa
 
 	if !isOwner && !req.Force {
 		t.RemoveOwner(sess.ID)
-		sess.Unsubscribe(req.TargetId)
+		sess.Unsubscribe(targetID)
 
 		shouldRemove := !t.HasOwners() && !t.Persistent
 		if shouldRemove {
-			delete(srv.targets, req.TargetId)
+			delete(srv.targets, targetID)
 			delete(srv.targetIndex, key)
+			srv.unregisterTargetName(name)
 			srv.mu.Unlock()
-			srv.indices.Remove(req.TargetId, state, protocol, host)
-			srv.poller.RemoveTarget(req.TargetId)
-			log.Printf("Removed target %s (no owners)", req.TargetId)
+			srv.indices.Remove(targetID, state, protocol, host)
+			srv.poller.RemoveTarget(targetID)
+			log.Printf("Removed target %s (no owners)", targetID)
 		} else {
 			srv.mu.Unlock()
 		}
@@ -709,13 +762,14 @@ func (srv *Server) handleDeleteTarget(sess *Session, id uint64, req *pb.DeleteTa
 		return
 	}
 
-	delete(srv.targets, req.TargetId)
+	delete(srv.targets, targetID)
 	delete(srv.targetIndex, key)
+	srv.unregisterTargetName(name)
 	srv.mu.Unlock()
 
-	srv.indices.Remove(req.TargetId, state, protocol, host)
-	srv.poller.RemoveTarget(req.TargetId)
-	log.Printf("Deleted target %s (force=%v)", req.TargetId, req.Force)
+	srv.indices.Remove(targetID, state, protocol, host)
+	srv.poller.RemoveTarget(targetID)
+	log.Printf("Deleted target %s (force=%v)", targetID, req.Force)
 
 	sess.Send(&pb.Envelope{
 		Id: id,
@@ -852,16 +906,33 @@ func (srv *Server) handleUnsubscribe(sess *Session, id uint64, req *pb.Unsubscri
 func (srv *Server) handleGetConfig(sess *Session, id uint64) {
 	srv.runtimeMu.RLock()
 	cfg := &pb.RuntimeConfig{
-		DefaultTimeoutMs:   srv.defaultTimeoutMs,
-		DefaultRetries:     srv.defaultRetries,
-		DefaultBufferSize:  srv.defaultBufferSize,
-		MinIntervalMs:      srv.minIntervalMs,
-		PollerWorkers:      int32(srv.cfg.Poller.Workers),
-		PollerQueueSize:    int32(srv.cfg.Poller.QueueSize),
+		// SNMP defaults (changeable)
+		DefaultTimeoutMs:  srv.defaultTimeoutMs,
+		DefaultRetries:    srv.defaultRetries,
+		DefaultBufferSize: srv.defaultBufferSize,
+
+		// Limits (changeable)
+		MinIntervalMs: srv.minIntervalMs,
+
+		// Poller (read-only)
+		PollerWorkers:   int32(srv.cfg.Poller.Workers),
+		PollerQueueSize: int32(srv.cfg.Poller.QueueSize),
+
+		// Session (read-only)
+		AuthTimeoutSec:     uint32(srv.cfg.Session.AuthTimeoutSec),
 		ReconnectWindowSec: uint32(srv.cfg.Session.ReconnectWindowSec),
-		Version:            Version,
-		UptimeMs:           time.Since(srv.startedAt).Milliseconds(),
-		StartedAtMs:        srv.startedAt.UnixMilli(),
+
+		// TLS (read-only)
+		TlsEnabled:  srv.cfg.TLSEnabled(),
+		TlsCertFile: srv.cfg.TLS.CertFile,
+
+		// Network (read-only)
+		ListenAddress: srv.cfg.Server.Listen,
+
+		// Server info
+		Version:     Version,
+		UptimeMs:    time.Since(srv.startedAt).Milliseconds(),
+		StartedAtMs: srv.startedAt.UnixMilli(),
 	}
 	srv.runtimeMu.RUnlock()
 
@@ -1017,4 +1088,34 @@ func (srv *Server) cleanupTargets() {
 
 func (srv *Server) genID() string {
 	return uuid.New().String()[:8]
+}
+
+// resolveTarget looks up a target by ID or name.
+// Must be called with srv.mu held (at least RLock).
+func (srv *Server) resolveTarget(idOrName string) *Target {
+	// Try by ID first
+	if t, ok := srv.targets[idOrName]; ok {
+		return t
+	}
+	// Try by name
+	if targetID, ok := srv.nameIndex[idOrName]; ok {
+		return srv.targets[targetID]
+	}
+	return nil
+}
+
+// registerTargetName adds a name to the name index.
+// Must be called with srv.mu held (Lock).
+func (srv *Server) registerTargetName(targetID, name string) {
+	if name != "" {
+		srv.nameIndex[name] = targetID
+	}
+}
+
+// unregisterTargetName removes a name from the name index.
+// Must be called with srv.mu held (Lock).
+func (srv *Server) unregisterTargetName(name string) {
+	if name != "" {
+		delete(srv.nameIndex, name)
+	}
 }

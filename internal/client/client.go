@@ -119,10 +119,32 @@ func (c *Client) Connect() error {
 // Close disconnects.
 func (c *Client) Close() {
 	c.connected.Store(false)
-	close(c.shutdown)
+	select {
+	case <-c.shutdown:
+		// Already closed
+	default:
+		close(c.shutdown)
+	}
 	if c.conn != nil {
 		c.conn.Close()
 	}
+}
+
+// Reconnect attempts to reconnect to the server.
+func (c *Client) Reconnect() error {
+	// Close existing connection
+	if c.conn != nil {
+		c.conn.Close()
+	}
+
+	// Reset state
+	c.mu.Lock()
+	c.pending = make(map[uint64]chan *pb.Envelope)
+	c.shutdown = make(chan struct{})
+	c.mu.Unlock()
+
+	// Reconnect
+	return c.Connect()
 }
 
 // SessionID returns the session ID.

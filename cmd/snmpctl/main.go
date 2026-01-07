@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/c-bata/go-prompt"
+	"github.com/c-bata/go-prompt/completer"
 	"github.com/xtxerr/snmpproxy/internal/client"
 	pb "github.com/xtxerr/snmpproxy/internal/proto"
 )
@@ -26,7 +28,8 @@ var (
 )
 
 var cli *client.Client
-var completer *Completer
+var comp *Completer
+var historyFile string
 
 func main() {
 	flag.Parse()
@@ -40,6 +43,10 @@ func main() {
 	}
 
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
+
+	// Setup history file
+	homeDir, _ := os.UserHomeDir()
+	historyFile = filepath.Join(homeDir, ".snmpctl_history")
 
 	cli = client.New(&client.Config{
 		Addr:          *serverAddr,
@@ -56,7 +63,7 @@ func main() {
 
 	cli.OnSample(handleSample)
 
-	completer = NewCompleter(cli)
+	comp = NewCompleter(cli)
 
 	printHelp()
 	
@@ -111,7 +118,8 @@ func printHelp() {
       --json                  JSON output
 
   add snmp <host> <oid> [flags]
-    --id=X                    Custom target ID
+    --name=X                  User-friendly name
+    --id=X                    Custom target ID (auto-generated if empty)
     --desc=X                  Description
     --tag=X                   Tag (repeatable)
     --interval=N              Poll interval ms (default 1000)
@@ -128,7 +136,8 @@ func printHelp() {
       --priv-proto=X          DES, AES, AES256, etc.
       --priv-pass=X           Privacy password
 
-  set <target-id> [flags]
+  set <target-id|name> [flags]
+    --name=X                  Change name
     --desc=X                  Set description
     --interval=N              Set poll interval
     --buffer=N                Set buffer size
@@ -139,13 +148,16 @@ func printHelp() {
     --tag +X                  Add tag
     --tag -X                  Remove tag
     --tag X                   Set tags (replace all)
+    --community=X             Change SNMPv2c community
+    --auth-pass=X             Change SNMPv3 auth password
+    --priv-pass=X             Change SNMPv3 priv password
 
-  rm <target-id> [-f]         Delete target (-f for force)
+  rm <target-id|name> [-f]    Delete target (-f for force)
 
-  history <target-id> [n]     Show last n samples (default 10)
+  history <target-id|name> [n]  Show last n samples (default 10)
 
-  sub <target-id>... [--tag=X]  Subscribe to targets
-  unsub [target-id]...          Unsubscribe (all if no args)
+  sub <target-id|name>... [--tag=X]  Subscribe to targets
+  unsub [target-id|name]...          Unsubscribe (all if no args)
 
   config                      Show runtime config
   config set <key> <value>    Set config value
@@ -158,9 +170,12 @@ func printHelp() {
 
 // interactivePrompt uses go-prompt for tab completion and history.
 func interactivePrompt() {
+	// Load history
+	history := loadHistory()
+
 	p := prompt.New(
 		executor,
-		completer.Complete,
+		comp.Complete,
 		prompt.OptionPrefix("> "),
 		prompt.OptionTitle("snmpctl"),
 		prompt.OptionPrefixTextColor(prompt.Cyan),
@@ -168,15 +183,64 @@ func interactivePrompt() {
 		prompt.OptionSelectedSuggestionBGColor(prompt.DarkBlue),
 		prompt.OptionSuggestionBGColor(prompt.DarkGray),
 		prompt.OptionMaxSuggestion(10),
-		prompt.OptionShowCompletionAtStart(),
+		prompt.OptionHistory(history),
+		prompt.OptionAddKeyBind(prompt.KeyBind{
+			Key: prompt.ControlC,
+			Fn: func(b *prompt.Buffer) {
+				fmt.Println("^C")
+			},
+		}),
+		prompt.OptionCompletionWordSeparator(completer.FilePathCompletionSeparator),
 	)
 	p.Run()
+}
+
+func loadHistory() []string {
+	data, err := os.ReadFile(historyFile)
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(string(data), "\n")
+	var history []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			history = append(history, line)
+		}
+	}
+	// Keep last 1000 entries
+	if len(history) > 1000 {
+		history = history[len(history)-1000:]
+	}
+	return history
+}
+
+func saveHistory(line string) {
+	f, err := os.OpenFile(historyFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	f.WriteString(line + "\n")
 }
 
 func executor(input string) {
 	line := strings.TrimSpace(input)
 	if line == "" {
 		return
+	}
+
+	// Save to history
+	saveHistory(line)
+
+	// Check connection status
+	if !cli.IsConnected() {
+		fmt.Println("Error: Connection lost. Reconnecting...")
+		if err := cli.Reconnect(); err != nil {
+			fmt.Printf("Reconnect failed: %v\n", err)
+			return
+		}
+		fmt.Println("Reconnected.")
 	}
 
 	args := parseArgs(line)
@@ -531,6 +595,8 @@ func cmdAdd(args []string) {
 		switch {
 		case strings.HasPrefix(arg, "--id="):
 			req.Id = strings.TrimPrefix(arg, "--id=")
+		case strings.HasPrefix(arg, "--name="):
+			req.Name = strings.TrimPrefix(arg, "--name=")
 		case strings.HasPrefix(arg, "--desc="):
 			req.Description = strings.TrimPrefix(arg, "--desc=")
 		case strings.HasPrefix(arg, "--tag="):
@@ -598,10 +664,16 @@ func cmdAdd(args []string) {
 		return
 	}
 
+	// Show name if set, otherwise ID
+	displayName := resp.TargetId
+	if resp.TargetName != "" {
+		displayName = fmt.Sprintf("%s (%s)", resp.TargetName, resp.TargetId)
+	}
+
 	if resp.Created {
-		fmt.Printf("Created: %s\n", resp.TargetId)
+		fmt.Printf("Created: %s\n", displayName)
 	} else {
-		fmt.Printf("Joined: %s (%s)\n", resp.TargetId, resp.Message)
+		fmt.Printf("Joined: %s (%s)\n", displayName, resp.Message)
 	}
 }
 
@@ -622,6 +694,9 @@ func cmdSet(args []string) {
 		arg := args[i]
 
 		switch {
+		case strings.HasPrefix(arg, "--name="):
+			name := strings.TrimPrefix(arg, "--name=")
+			req.Name = &name
 		case strings.HasPrefix(arg, "--desc="):
 			desc := strings.TrimPrefix(arg, "--desc=")
 			req.Description = &desc
@@ -651,6 +726,27 @@ func cmdSet(args []string) {
 		case arg == "--no-persistent":
 			val := false
 			req.Persistent = &val
+		case strings.HasPrefix(arg, "--community="):
+			community := strings.TrimPrefix(arg, "--community=")
+			req.Community = &community
+		case strings.HasPrefix(arg, "--user="):
+			user := strings.TrimPrefix(arg, "--user=")
+			req.SecurityName = &user
+		case strings.HasPrefix(arg, "--level="):
+			level := strings.TrimPrefix(arg, "--level=")
+			req.SecurityLevel = &level
+		case strings.HasPrefix(arg, "--auth-proto="):
+			proto := strings.TrimPrefix(arg, "--auth-proto=")
+			req.AuthProtocol = &proto
+		case strings.HasPrefix(arg, "--auth-pass="):
+			pass := strings.TrimPrefix(arg, "--auth-pass=")
+			req.AuthPassword = &pass
+		case strings.HasPrefix(arg, "--priv-proto="):
+			proto := strings.TrimPrefix(arg, "--priv-proto=")
+			req.PrivProtocol = &proto
+		case strings.HasPrefix(arg, "--priv-pass="):
+			pass := strings.TrimPrefix(arg, "--priv-pass=")
+			req.PrivPassword = &pass
 		case strings.HasPrefix(arg, "--tag"):
 			// --tag +X (add), --tag -X (remove), --tag X (set)
 			if i+1 < len(args) {

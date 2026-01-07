@@ -17,6 +17,7 @@ type Target struct {
 
 	// Identity
 	ID          string
+	Name        string   // User-friendly name, optional
 	Description string
 	Tags        []string
 	Persistent  bool
@@ -68,6 +69,7 @@ type Sample struct {
 func NewTarget(id string, req *pb.CreateTargetRequest, defaultBufSize uint32) *Target {
 	t := &Target{
 		ID:          id,
+		Name:        req.Name,
 		Description: req.Description,
 		Tags:        req.Tags,
 		Persistent:  req.Persistent,
@@ -280,6 +282,7 @@ func (t *Target) ToProto() *pb.Target {
 
 	target := &pb.Target{
 		Id:              t.ID,
+		Name:            t.Name,
 		Description:     t.Description,
 		Tags:            t.Tags,
 		Persistent:      t.Persistent,
