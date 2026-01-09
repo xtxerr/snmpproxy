@@ -29,21 +29,23 @@ func NamespaceInfoToProto(info *handler.NamespaceInfo) map[string]interface{} {
 	if info == nil {
 		return nil
 	}
-	return map[string]interface{}{
+	result := map[string]interface{}{
 		"name":        info.Name,
 		"description": info.Description,
-		"stats": map[string]interface{}{
-			"target_count":     info.TargetCount,
-			"poller_count":     info.PollerCount,
-			"pollers_running":  info.PollersRunning,
-			"pollers_up":       info.PollersUp,
-			"pollers_down":     info.PollersDown,
-			"tree_node_count":  info.TreeNodeCount,
-		},
-		"created_at_ms": info.CreatedAt.UnixMilli(),
-		"updated_at_ms": info.UpdatedAt.UnixMilli(),
-		"version":       info.Version,
 	}
+	
+	if info.Stats != nil {
+		result["stats"] = map[string]interface{}{
+			"target_count":     info.Stats.TargetCount,
+			"poller_count":     info.Stats.PollerCount,
+			"pollers_running":  info.Stats.PollersRunning,
+			"pollers_up":       info.Stats.PollersUp,
+			"pollers_down":     info.Stats.PollersDown,
+			"tree_node_count":  info.Stats.TreeNodeCount,
+		}
+	}
+	
+	return result
 }
 
 // ============================================================================

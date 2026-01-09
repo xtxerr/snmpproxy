@@ -234,13 +234,25 @@ func applyNamespace(mgr *manager.Manager, name string, cfg *NamespaceConfig, res
 		Description: cfg.Description,
 	}
 
+	// Set defaults via Config struct
 	if cfg.Defaults != nil {
-		ns.DefaultIntervalMs = cfg.Defaults.IntervalMs
-		ns.DefaultTimeoutMs = cfg.Defaults.TimeoutMs
-		ns.DefaultRetries = cfg.Defaults.Retries
-		ns.DefaultBufferSize = cfg.Defaults.BufferSize
-		if cfg.Defaults.SNMP != nil {
-			ns.DefaultCommunity = cfg.Defaults.SNMP.Community
+		ns.Config = &store.NamespaceConfig{
+			Defaults: &store.PollerDefaults{},
+		}
+		if cfg.Defaults.IntervalMs > 0 {
+			ns.Config.Defaults.IntervalMs = &cfg.Defaults.IntervalMs
+		}
+		if cfg.Defaults.TimeoutMs > 0 {
+			ns.Config.Defaults.TimeoutMs = &cfg.Defaults.TimeoutMs
+		}
+		if cfg.Defaults.Retries > 0 {
+			ns.Config.Defaults.Retries = &cfg.Defaults.Retries
+		}
+		if cfg.Defaults.BufferSize > 0 {
+			ns.Config.Defaults.BufferSize = &cfg.Defaults.BufferSize
+		}
+		if cfg.Defaults.SNMP != nil && cfg.Defaults.SNMP.Community != "" {
+			ns.Config.Defaults.SNMPCommunity = &cfg.Defaults.SNMP.Community
 		}
 	}
 
@@ -262,12 +274,7 @@ func applyNamespace(mgr *manager.Manager, name string, cfg *NamespaceConfig, res
 
 	// Create secrets first (they might be referenced)
 	for secretName, secretCfg := range cfg.Secrets {
-		secret := &store.Secret{
-			Namespace: name,
-			Name:      secretName,
-			Type:      secretCfg.Type,
-		}
-		if err := mgr.Secrets.Create(secret, secretCfg.Value); err != nil {
+		if err := mgr.Store().CreateSecret(name, secretName, secretCfg.Type, secretCfg.Value); err != nil {
 			result.Errors = append(result.Errors,
 				fmt.Sprintf("secret %s/%s: %v", name, secretName, err))
 		} else {
@@ -302,13 +309,25 @@ func applyTarget(mgr *manager.Manager, namespace, name string, cfg *TargetConfig
 		Labels:      cfg.Labels,
 	}
 
+	// Set defaults via Config struct
 	if cfg.Defaults != nil {
-		target.DefaultIntervalMs = cfg.Defaults.IntervalMs
-		target.DefaultTimeoutMs = cfg.Defaults.TimeoutMs
-		target.DefaultRetries = cfg.Defaults.Retries
-		target.DefaultBufferSize = cfg.Defaults.BufferSize
-		if cfg.Defaults.SNMP != nil {
-			target.DefaultCommunity = cfg.Defaults.SNMP.Community
+		target.Config = &store.TargetConfig{
+			Defaults: &store.PollerDefaults{},
+		}
+		if cfg.Defaults.IntervalMs > 0 {
+			target.Config.Defaults.IntervalMs = &cfg.Defaults.IntervalMs
+		}
+		if cfg.Defaults.TimeoutMs > 0 {
+			target.Config.Defaults.TimeoutMs = &cfg.Defaults.TimeoutMs
+		}
+		if cfg.Defaults.Retries > 0 {
+			target.Config.Defaults.Retries = &cfg.Defaults.Retries
+		}
+		if cfg.Defaults.BufferSize > 0 {
+			target.Config.Defaults.BufferSize = &cfg.Defaults.BufferSize
+		}
+		if cfg.Defaults.SNMP != nil && cfg.Defaults.SNMP.Community != "" {
+			target.Config.Defaults.SNMPCommunity = &cfg.Defaults.SNMP.Community
 		}
 	}
 

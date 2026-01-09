@@ -12,6 +12,7 @@ import (
 	"github.com/xtxerr/snmpproxy/internal/loader"
 	"github.com/xtxerr/snmpproxy/internal/manager"
 	"github.com/xtxerr/snmpproxy/internal/server"
+	"github.com/xtxerr/snmpproxy/internal/store"
 )
 
 // Version is set at build time via ldflags
@@ -99,19 +100,21 @@ func main() {
 
 	// Create manager
 	mgr, err := manager.New(&manager.Config{
-		DBPath:    cfg.Storage.DBPath,
-		SecretKey: cfg.Storage.SecretKeyPath,
-		Version:   Version,
-		Defaults: manager.Defaults{
-			TimeoutMs:  cfg.SNMP.TimeoutMs,
-			Retries:    cfg.SNMP.Retries,
-			IntervalMs: cfg.SNMP.IntervalMs,
-			BufferSize: cfg.SNMP.BufferSize,
-		},
+		DBPath:        cfg.Storage.DBPath,
+		SecretKeyPath: cfg.Storage.SecretKeyPath,
+		Version:       Version,
 	})
 	if err != nil {
 		log.Fatalf("Create manager: %v", err)
 	}
+
+	// Set server defaults in store
+	mgr.Store().UpdateServerConfig(&store.ServerConfig{
+		DefaultTimeoutMs:  cfg.SNMP.TimeoutMs,
+		DefaultRetries:    cfg.SNMP.Retries,
+		DefaultIntervalMs: cfg.SNMP.IntervalMs,
+		DefaultBufferSize: cfg.SNMP.BufferSize,
+	})
 
 	// Apply config (namespaces, targets, pollers)
 	if len(cfg.Namespaces) > 0 {

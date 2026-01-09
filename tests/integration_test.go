@@ -373,27 +373,40 @@ func TestConfigInheritance(t *testing.T) {
 	})
 
 	// Create namespace with overrides
+	timeout3000 := uint32(3000)
 	mgr.Namespaces.Create(&store.Namespace{
-		Name:             "prod",
-		DefaultTimeoutMs: 3000, // Override
-		// Retries not set - should inherit from server
+		Name: "prod",
+		Config: &store.NamespaceConfig{
+			Defaults: &store.PollerDefaults{
+				TimeoutMs: &timeout3000, // Override
+				// Retries not set - should inherit from server
+			},
+		},
 	})
 
 	// Create target with overrides
+	interval2000 := uint32(2000)
 	mgr.Targets.Create(&store.Target{
-		Namespace:        "prod",
-		Name:             "router",
-		DefaultIntervalMs: 2000, // Override
+		Namespace: "prod",
+		Name:      "router",
+		Config: &store.TargetConfig{
+			Defaults: &store.PollerDefaults{
+				IntervalMs: &interval2000, // Override
+			},
+		},
 	})
 
 	// Create poller with explicit value
+	timeout1000 := uint32(1000)
 	mgr.Pollers.Create(&store.Poller{
-		Namespace:  "prod",
-		Target:     "router",
-		Name:       "cpu",
-		Protocol:   "snmp",
-		TimeoutMs:  1000, // Override
-		// IntervalMs not set - should inherit from target
+		Namespace: "prod",
+		Target:    "router",
+		Name:      "cpu",
+		Protocol:  "snmp",
+		PollingConfig: &store.PollingConfig{
+			TimeoutMs: &timeout1000, // Override
+			// IntervalMs not set - should inherit from target
+		},
 	})
 
 	// Resolve config
