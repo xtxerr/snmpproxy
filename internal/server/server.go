@@ -2,201 +2,213 @@
 package server
 
 import (
-	"crypto/subtle"
 	"crypto/tls"
 	"fmt"
 	"log"
 	"net"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/xtxerr/snmpproxy/config"
-	pb "github.com/xtxerr/snmpproxy/internal/proto"
+	"github.com/xtxerr/snmpproxy/internal/handler"
+	"github.com/xtxerr/snmpproxy/internal/manager"
+	"github.com/xtxerr/snmpproxy/internal/scheduler"
+	"github.com/xtxerr/snmpproxy/internal/store"
 	"github.com/xtxerr/snmpproxy/internal/wire"
 )
 
-// Version is set at build time via ldflags.
+// Version is set at build time.
 var Version = "dev"
 
-// Server is the SNMP proxy server.
+// Config holds server configuration.
+type Config struct {
+	// External manager (if provided, DBPath/SecretKeyPath are ignored)
+	Manager *manager.Manager
+
+	// Network
+	Listen string
+
+	// TLS
+	TLSCertFile string
+	TLSKeyFile  string
+
+	// Auth
+	Tokens []handler.TokenConfig
+
+	// Timeouts
+	AuthTimeoutSec     int
+	ReconnectWindowSec int
+
+	// Scheduler
+	PollerWorkers   int
+	PollerQueueSize int
+
+	// Storage (only used if Manager is nil)
+	DBPath        string
+	SecretKeyPath string
+
+	// SNMP Defaults
+	DefaultTimeoutMs  uint32
+	DefaultRetries    uint32
+	DefaultIntervalMs uint32
+	DefaultBufferSize uint32
+}
+
+// DefaultConfig returns default configuration.
+func DefaultConfig() *Config {
+	return &Config{
+		Listen:             "0.0.0.0:9161",
+		AuthTimeoutSec:     30,
+		ReconnectWindowSec: 600,
+		PollerWorkers:      100,
+		PollerQueueSize:    10000,
+		DBPath:             "snmpproxy.db",
+		DefaultTimeoutMs:   5000,
+		DefaultRetries:     2,
+		DefaultIntervalMs:  1000,
+		DefaultBufferSize:  3600,
+	}
+}
+
+// Server is the v2 SNMP proxy server.
 type Server struct {
-	cfg      *config.Config
+	cfg      *Config
 	listener net.Listener
-	poller   *Poller
-	indices  *Indices
 
-	mu          sync.RWMutex
-	sessions    map[string]*Session
-	targets     map[string]*Target
-	targetIndex map[string]string // "host:port/oid" -> targetID
-	nameIndex   map[string]string // name -> targetID (for lookup by name)
+	// Core components
+	mgr       *manager.Manager
+	scheduler *scheduler.Scheduler
+	sessions  *handler.SessionManager
+	handler   *handler.Handler
 
-	// Runtime config
-	runtimeMu         sync.RWMutex
-	defaultTimeoutMs  uint32
-	defaultRetries    uint32
-	defaultBufferSize uint32
-	minIntervalMs     uint32
+	// Handlers
+	nsHandler     *handler.NamespaceHandler
+	targetHandler *handler.TargetHandler
+	pollerHandler *handler.PollerHandler
+	browseHandler *handler.BrowseHandler
+	subHandler    *handler.SubscriptionHandler
+	statusHandler *handler.StatusHandler
+	secretHandler *handler.SecretHandler
 
-	// Statistics
-	startedAt   time.Time
-	pollsTotal  atomic.Int64
-	pollsOK     atomic.Int64
-	pollsFailed atomic.Int64
+	// SNMP poller
+	snmpPoller *scheduler.SNMPPoller
 
+	// Control
 	shutdown chan struct{}
-}
-
-// Session represents a connected client.
-type Session struct {
-	mu sync.RWMutex
-
-	ID        string
-	TokenID   string
-	Conn      net.Conn
-	Wire      *wire.Conn
-	CreatedAt time.Time
-	LostAt    *time.Time
-
-	subscriptions map[string]bool
-	sendCh        chan *pb.Envelope
-}
-
-// NewSession creates a new session.
-func NewSession(id, tokenID string, conn net.Conn, w *wire.Conn) *Session {
-	return &Session{
-		ID:            id,
-		TokenID:       tokenID,
-		Conn:          conn,
-		Wire:          w,
-		CreatedAt:     time.Now(),
-		subscriptions: make(map[string]bool),
-		sendCh:        make(chan *pb.Envelope, 1000),
-	}
-}
-
-// Subscribe adds a target subscription.
-func (s *Session) Subscribe(targetID string) {
-	s.mu.Lock()
-	s.subscriptions[targetID] = true
-	s.mu.Unlock()
-}
-
-// Unsubscribe removes a target subscription.
-func (s *Session) Unsubscribe(targetID string) {
-	s.mu.Lock()
-	delete(s.subscriptions, targetID)
-	s.mu.Unlock()
-}
-
-// UnsubscribeAll removes all subscriptions and returns the IDs.
-func (s *Session) UnsubscribeAll() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ids := make([]string, 0, len(s.subscriptions))
-	for id := range s.subscriptions {
-		ids = append(ids, id)
-	}
-	s.subscriptions = make(map[string]bool)
-	return ids
-}
-
-// IsSubscribed checks if subscribed to a target.
-func (s *Session) IsSubscribed(targetID string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.subscriptions[targetID]
-}
-
-// GetSubscriptions returns subscribed target IDs.
-func (s *Session) GetSubscriptions() []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	ids := make([]string, 0, len(s.subscriptions))
-	for id := range s.subscriptions {
-		ids = append(ids, id)
-	}
-	return ids
-}
-
-// SubscriptionCount returns the number of subscriptions.
-func (s *Session) SubscriptionCount() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.subscriptions)
-}
-
-// Send queues an envelope for sending.
-func (s *Session) Send(env *pb.Envelope) bool {
-	select {
-	case s.sendCh <- env:
-		return true
-	default:
-		return false
-	}
-}
-
-// MarkLost marks the session as disconnected.
-func (s *Session) MarkLost() {
-	s.mu.Lock()
-	now := time.Now()
-	s.LostAt = &now
-	s.mu.Unlock()
-}
-
-// IsLost returns true if session is disconnected.
-func (s *Session) IsLost() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.LostAt != nil
-}
-
-// LostDuration returns how long the session has been lost.
-func (s *Session) LostDuration() time.Duration {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.LostAt == nil {
-		return 0
-	}
-	return time.Since(*s.LostAt)
-}
-
-// Close closes the session.
-func (s *Session) Close() {
-	close(s.sendCh)
-	s.Conn.Close()
+	wg       sync.WaitGroup
 }
 
 // New creates a new server.
-func New(cfg *config.Config) *Server {
-	srv := &Server{
-		cfg:               cfg,
-		sessions:          make(map[string]*Session),
-		targets:           make(map[string]*Target),
-		targetIndex:       make(map[string]string),
-		nameIndex:         make(map[string]string),
-		indices:           NewIndices(),
-		shutdown:          make(chan struct{}),
-		startedAt:         time.Now(),
-		defaultTimeoutMs:  cfg.SNMP.TimeoutMs,
-		defaultRetries:    cfg.SNMP.Retries,
-		defaultBufferSize: cfg.SNMP.BufferSize,
-		minIntervalMs:     100,
+func New(cfg *Config) *Server {
+	if cfg == nil {
+		cfg = DefaultConfig()
 	}
-	srv.poller = NewPoller(srv, cfg.Poller.Workers, cfg.Poller.QueueSize)
+
+	// Use provided manager or create new
+	var mgr *manager.Manager
+	var err error
+
+	if cfg.Manager != nil {
+		mgr = cfg.Manager
+	} else {
+		mgr, err = manager.New(&manager.Config{
+			DBPath:        cfg.DBPath,
+			SecretKeyPath: cfg.SecretKeyPath,
+			Version:       Version,
+		})
+		if err != nil {
+			log.Fatalf("Create manager: %v", err)
+		}
+
+		// Set server defaults in store
+		mgr.Store().UpdateServerConfig(&store.ServerConfig{
+			DefaultTimeoutMs:  cfg.DefaultTimeoutMs,
+			DefaultRetries:    cfg.DefaultRetries,
+			DefaultIntervalMs: cfg.DefaultIntervalMs,
+			DefaultBufferSize: cfg.DefaultBufferSize,
+		})
+	}
+
+	// Create session manager
+	sessions := handler.NewSessionManager(&handler.SessionManagerConfig{
+		ReconnectWindow: time.Duration(cfg.ReconnectWindowSec) * time.Second,
+		AuthTimeout:     time.Duration(cfg.AuthTimeoutSec) * time.Second,
+		Tokens:          cfg.Tokens,
+	})
+
+	// Create scheduler
+	sched := scheduler.New(&scheduler.Config{
+		Workers:   cfg.PollerWorkers,
+		QueueSize: cfg.PollerQueueSize,
+	})
+
+	// Create SNMP poller
+	snmpPoller := scheduler.NewSNMPPoller(cfg.DefaultTimeoutMs, cfg.DefaultRetries)
+
+	// Create handler
+	h := handler.NewHandler(mgr, sessions)
+
+	srv := &Server{
+		cfg:           cfg,
+		mgr:           mgr,
+		scheduler:     sched,
+		sessions:      sessions,
+		handler:       h,
+		snmpPoller:    snmpPoller,
+		nsHandler:     handler.NewNamespaceHandler(h),
+		targetHandler: handler.NewTargetHandler(h),
+		pollerHandler: handler.NewPollerHandler(h),
+		browseHandler: handler.NewBrowseHandler(h),
+		subHandler:    handler.NewSubscriptionHandler(h),
+		statusHandler: handler.NewStatusHandler(h),
+		secretHandler: handler.NewSecretHandler(h),
+		shutdown:      make(chan struct{}),
+	}
+
+	// Wire up scheduler callbacks
+	srv.mgr.Pollers.SetCallbacks(
+		srv.onPollerCreated,
+		srv.onPollerDeleted,
+		srv.onPollerUpdated,
+	)
+
+	// Set poll function
+	sched.SetPollFunc(srv.executePoll)
+
 	return srv
 }
 
-// Run starts the server.
-func (srv *Server) Run() error {
+// Run starts the server (blocking).
+func (s *Server) Run() error {
+	// Load existing data
+	log.Println("Loading data from store...")
+	if err := s.mgr.Load(); err != nil {
+		return fmt.Errorf("load data: %w", err)
+	}
+
+	// Start sync manager
+	s.mgr.Start()
+
+	// Start scheduler
+	s.scheduler.Start()
+
+	// Start result processor
+	s.wg.Add(1)
+	go s.processResults()
+
+	// Start session cleanup
+	s.wg.Add(1)
+	go s.cleanupLoop()
+
+	// Schedule enabled pollers
+	started := s.scheduleEnabledPollers()
+	log.Printf("Scheduled %d enabled pollers", started)
+
+	// Start listener
 	var ln net.Listener
 	var err error
 
-	if srv.cfg.TLSEnabled() {
-		cert, err := tls.LoadX509KeyPair(srv.cfg.TLS.CertFile, srv.cfg.TLS.KeyFile)
+	if s.cfg.TLSCertFile != "" && s.cfg.TLSKeyFile != "" {
+		cert, err := tls.LoadX509KeyPair(s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
 		if err != nil {
 			return fmt.Errorf("load TLS cert: %w", err)
 		}
@@ -204,172 +216,62 @@ func (srv *Server) Run() error {
 			Certificates: []tls.Certificate{cert},
 			MinVersion:   tls.VersionTLS12,
 		}
-		ln, err = tls.Listen("tcp", srv.cfg.Server.Listen, tlsCfg)
+		ln, err = tls.Listen("tcp", s.cfg.Listen, tlsCfg)
 		if err != nil {
 			return fmt.Errorf("TLS listen: %w", err)
 		}
-		log.Printf("Listening on %s (TLS)", srv.cfg.Server.Listen)
+		log.Printf("Listening on %s (TLS)", s.cfg.Listen)
 	} else {
-		ln, err = net.Listen("tcp", srv.cfg.Server.Listen)
+		ln, err = net.Listen("tcp", s.cfg.Listen)
 		if err != nil {
 			return fmt.Errorf("listen: %w", err)
 		}
-		log.Printf("Listening on %s (no TLS)", srv.cfg.Server.Listen)
+		log.Printf("Listening on %s (no TLS)", s.cfg.Listen)
 	}
 
-	srv.listener = ln
+	s.listener = ln
 
-	// Load config targets
-	srv.loadConfigTargets()
-
-	srv.poller.Start()
-	go srv.cleanup()
-
+	// Accept connections
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			select {
-			case <-srv.shutdown:
+			case <-s.shutdown:
 				return nil
 			default:
 				log.Printf("Accept error: %v", err)
 				continue
 			}
 		}
-		go srv.handleConn(conn)
+		go s.handleConn(conn)
 	}
 }
 
-// loadConfigTargets loads targets defined in the config file.
-func (srv *Server) loadConfigTargets() {
-	for _, tc := range srv.cfg.Targets {
-		t := srv.createTargetFromConfig(&tc)
-		if t == nil {
-			continue
-		}
+// Shutdown stops the server gracefully.
+func (s *Server) Shutdown() {
+	log.Println("Shutting down...")
+	close(s.shutdown)
 
-		srv.mu.Lock()
-		srv.targets[t.ID] = t
-		srv.targetIndex[t.Key()] = t.ID
-		srv.mu.Unlock()
-
-		srv.indices.Add(t.ID, t.State, t.Protocol, t.Host, t.Tags)
-		srv.poller.AddTarget(t.ID, t.IntervalMs)
-
-		log.Printf("Loaded config target: %s (%s)", t.ID, t.Key())
+	if s.listener != nil {
+		s.listener.Close()
 	}
+
+	s.scheduler.Stop()
+	s.wg.Wait()
+	s.mgr.Stop()
+
+	log.Println("Shutdown complete")
 }
 
-// createTargetFromConfig creates a Target from a config.TargetConfig.
-func (srv *Server) createTargetFromConfig(tc *config.TargetConfig) *Target {
-	t := &Target{
-		ID:          tc.ID,
-		Description: tc.Description,
-		Tags:        tc.Tags,
-		Persistent:  true,
-		State:       "polling",
-		Owners:      map[string]bool{"$config": true},
-		CreatedAt:   time.Now(),
-		PollMsMin:   -1,
-	}
-
-	t.IntervalMs = tc.IntervalMs
-	if t.IntervalMs == 0 {
-		t.IntervalMs = 1000
-	}
-
-	bufSize := int(tc.BufferSize)
-	if bufSize == 0 {
-		bufSize = int(srv.cfg.SNMP.BufferSize)
-	}
-	t.bufSize = bufSize
-	t.buffer = make([]Sample, bufSize)
-
-	if tc.SNMP != nil {
-		t.Protocol = "snmp"
-		t.Host = tc.SNMP.Host
-		t.Port = tc.SNMP.Port
-		if t.Port == 0 {
-			t.Port = 161
-		}
-		t.OID = tc.SNMP.OID
-		t.SNMP = srv.snmpConfigToProto(tc.SNMP)
-	}
-
-	return t
-}
-
-// snmpConfigToProto converts config.SNMPTargetConfig to pb.SNMPTargetConfig.
-func (srv *Server) snmpConfigToProto(c *config.SNMPTargetConfig) *pb.SNMPTargetConfig {
-	cfg := &pb.SNMPTargetConfig{
-		Host:      c.Host,
-		Port:      uint32(c.Port),
-		Oid:       c.OID,
-		TimeoutMs: c.TimeoutMs,
-		Retries:   c.Retries,
-	}
-
-	if c.IsV3() {
-		cfg.Version = &pb.SNMPTargetConfig_V3{
-			V3: &pb.SNMPv3Config{
-				SecurityName:  c.SecurityName,
-				SecurityLevel: c.SecurityLevel,
-				AuthProtocol:  c.AuthProtocol,
-				AuthPassword:  c.AuthPassword,
-				PrivProtocol:  c.PrivProtocol,
-				PrivPassword:  c.PrivPassword,
-				ContextName:   c.ContextName,
-			},
-		}
-	} else {
-		community := c.Community
-		if community == "" {
-			community = "public"
-		}
-		cfg.Version = &pb.SNMPTargetConfig_V2C{
-			V2C: &pb.SNMPv2CConfig{Community: community},
-		}
-	}
-
-	return cfg
-}
-
-// Shutdown stops the server.
-func (srv *Server) Shutdown() {
-	close(srv.shutdown)
-	srv.poller.Stop()
-	if srv.listener != nil {
-		srv.listener.Close()
-	}
-	srv.mu.Lock()
-	for _, s := range srv.sessions {
-		s.Close()
-	}
-	srv.mu.Unlock()
-}
-
-// RecordPoll records poll statistics.
-func (srv *Server) RecordPoll(success bool) {
-	srv.pollsTotal.Add(1)
-	if success {
-		srv.pollsOK.Add(1)
-	} else {
-		srv.pollsFailed.Add(1)
-	}
-}
-
-// UpdateTargetState updates a target's state and the state index.
-func (srv *Server) UpdateTargetState(targetID, oldState, newState string) {
-	srv.indices.UpdateState(targetID, oldState, newState)
-}
-
-func (srv *Server) handleConn(conn net.Conn) {
+// handleConn handles a new connection.
+func (s *Server) handleConn(conn net.Conn) {
 	remote := conn.RemoteAddr().String()
 	log.Printf("Connection from %s", remote)
 
 	w := wire.NewConn(conn)
 
-	conn.SetDeadline(time.Now().Add(srv.cfg.AuthTimeout()))
+	// Auth with timeout
+	conn.SetDeadline(time.Now().Add(s.sessions.AuthTimeout()))
 
 	env, err := w.Read()
 	if err != nil {
@@ -378,744 +280,245 @@ func (srv *Server) handleConn(conn net.Conn) {
 		return
 	}
 
-	auth := env.GetAuthReq()
+	auth := env.GetAuth()
 	if auth == nil {
-		w.Write(newError(env.Id, ErrNotAuthenticated, "first message must be auth"))
+		w.Write(wire.NewError(env.Id, wire.ErrNotAuthenticated, "first message must be auth"))
 		conn.Close()
 		return
 	}
 
-	tokenID, ok := srv.validateToken(auth.Token)
+	tokenCfg, ok := s.sessions.ValidateToken(auth.Token)
 	if !ok {
-		w.Write(&pb.Envelope{
-			Id:      env.Id,
-			Payload: &pb.Envelope_AuthResp{AuthResp: &pb.AuthResponse{Ok: false, Message: "invalid token"}},
-		})
+		s.sendAuthResponse(w, env.Id, false, "", "invalid token")
 		conn.Close()
 		log.Printf("Auth failed from %s", remote)
 		return
 	}
 
-	conn.SetDeadline(time.Time{})
+	conn.SetDeadline(time.Time{}) // Clear deadline
 
-	sess := srv.tryRestore(tokenID, conn, w)
-	if sess == nil {
-		sess = NewSession(srv.genID(), tokenID, conn, w)
-		srv.mu.Lock()
-		srv.sessions[sess.ID] = sess
-		srv.mu.Unlock()
-		log.Printf("New session %s from %s (token: %s)", sess.ID, remote, tokenID)
+	// Try restore or create session
+	session := s.sessions.TryRestore(tokenCfg.ID, conn, w)
+	if session == nil {
+		session = s.sessions.CreateSession(tokenCfg.ID, conn, w)
+		log.Printf("New session %s from %s (token: %s)", session.ID, remote, tokenCfg.ID)
 	} else {
-		log.Printf("Restored session %s from %s", sess.ID, remote)
+		log.Printf("Restored session %s from %s", session.ID, remote)
 	}
 
-	if err := w.Write(&pb.Envelope{
-		Id:      env.Id,
-		Payload: &pb.Envelope_AuthResp{AuthResp: &pb.AuthResponse{Ok: true, SessionId: sess.ID}},
-	}); err != nil {
+	// Send auth response
+	if err := s.sendAuthResponse(w, env.Id, true, session.ID, ""); err != nil {
 		log.Printf("Failed to send auth response to %s: %v", remote, err)
 		conn.Close()
 		return
 	}
 
+	// Start writer goroutine
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for env := range sess.sendCh {
-			if err := w.Write(env); err != nil {
+		for data := range session.SendChan() {
+			if _, err := conn.Write(data); err != nil {
 				return
 			}
 		}
 	}()
 
+	// Read loop
 	for {
 		env, err := w.Read()
 		if err != nil {
 			break
 		}
-		srv.handle(sess, env)
+		s.handleMessage(session, env)
 	}
 
-	sess.MarkLost()
-	log.Printf("Session %s lost", sess.ID)
+	// Disconnect
+	session.MarkLost()
+	log.Printf("Session %s lost", session.ID)
 	<-done
 }
 
-func (srv *Server) handle(sess *Session, env *pb.Envelope) {
-	switch p := env.Payload.(type) {
-	case *pb.Envelope_BrowseReq:
-		srv.handleBrowse(sess, env.Id, p.BrowseReq)
-	case *pb.Envelope_CreateTargetReq:
-		srv.handleCreateTarget(sess, env.Id, p.CreateTargetReq)
-	case *pb.Envelope_UpdateTargetReq:
-		srv.handleUpdateTarget(sess, env.Id, p.UpdateTargetReq)
-	case *pb.Envelope_DeleteTargetReq:
-		srv.handleDeleteTarget(sess, env.Id, p.DeleteTargetReq)
-	case *pb.Envelope_GetHistoryReq:
-		srv.handleGetHistory(sess, env.Id, p.GetHistoryReq)
-	case *pb.Envelope_SubscribeReq:
-		srv.handleSubscribe(sess, env.Id, p.SubscribeReq)
-	case *pb.Envelope_UnsubscribeReq:
-		srv.handleUnsubscribe(sess, env.Id, p.UnsubscribeReq)
-	case *pb.Envelope_GetConfigReq:
-		srv.handleGetConfig(sess, env.Id)
-	case *pb.Envelope_SetConfigReq:
-		srv.handleSetConfig(sess, env.Id, p.SetConfigReq)
+// scheduleEnabledPollers schedules all enabled pollers.
+func (s *Server) scheduleEnabledPollers() int {
+	pollers := s.mgr.Pollers.GetEnabledPollers()
+	count := 0
+
+	for _, p := range pollers {
+		// Get resolved config for interval
+		cfg, err := s.mgr.ConfigResolver.Resolve(p.Namespace, p.Target, p.Name)
+		if err != nil {
+			continue
+		}
+
+		key := scheduler.PollerKey{
+			Namespace: p.Namespace,
+			Target:    p.Target,
+			Poller:    p.Name,
+		}
+
+		s.scheduler.Add(key, cfg.IntervalMs)
+
+		// Update state
+		state := s.mgr.States.Get(p.Namespace, p.Target, p.Name)
+		state.Start()
+		state.MarkRunning()
+
+		count++
+	}
+
+	return count
+}
+
+// Scheduler callbacks
+func (s *Server) onPollerCreated(namespace, target, poller string, intervalMs uint32) {
+	key := scheduler.PollerKey{Namespace: namespace, Target: target, Poller: poller}
+	s.scheduler.Add(key, intervalMs)
+}
+
+func (s *Server) onPollerDeleted(namespace, target, poller string) {
+	key := scheduler.PollerKey{Namespace: namespace, Target: target, Poller: poller}
+	s.scheduler.Remove(key)
+}
+
+func (s *Server) onPollerUpdated(namespace, target, poller string, intervalMs uint32) {
+	key := scheduler.PollerKey{Namespace: namespace, Target: target, Poller: poller}
+	s.scheduler.UpdateInterval(key, intervalMs)
+}
+
+// executePoll executes a poll for a poller.
+func (s *Server) executePoll(key scheduler.PollerKey) scheduler.PollResult {
+	// Get poller
+	p, err := s.mgr.Pollers.Get(key.Namespace, key.Target, key.Poller)
+	if err != nil || p == nil {
+		return scheduler.PollResult{
+			Key:         key,
+			TimestampMs: time.Now().UnixMilli(),
+			Success:     false,
+			Error:       "poller not found",
+		}
+	}
+
+	// Parse protocol config
+	switch p.Protocol {
+	case "snmp":
+		cfg, err := scheduler.ParseSNMPConfig(p.ProtocolConfig)
+		if err != nil {
+			return scheduler.PollResult{
+				Key:         key,
+				TimestampMs: time.Now().UnixMilli(),
+				Success:     false,
+				Error:       fmt.Sprintf("parse config: %v", err),
+			}
+		}
+
+		// Apply resolved config
+		resolved, _ := s.mgr.ConfigResolver.Resolve(key.Namespace, key.Target, key.Poller)
+		if resolved != nil {
+			if cfg.TimeoutMs == 0 {
+				cfg.TimeoutMs = resolved.TimeoutMs
+			}
+			if cfg.Retries == 0 {
+				cfg.Retries = resolved.Retries
+			}
+			// Apply SNMPv2c community from resolved config
+			if cfg.Community == "" || cfg.Community == "public" {
+				if resolved.Community != "" {
+					cfg.Community = resolved.Community
+				}
+			}
+		}
+
+		return s.snmpPoller.Poll(key, cfg)
+
 	default:
-		sess.Send(newError(env.Id, ErrInvalidRequest, "unknown request"))
+		return scheduler.PollResult{
+			Key:         key,
+			TimestampMs: time.Now().UnixMilli(),
+			Success:     false,
+			Error:       fmt.Sprintf("unknown protocol: %s", p.Protocol),
+		}
 	}
 }
 
-// ============================================================================
-// Target CRUD
-// ============================================================================
+// processResults processes poll results.
+func (s *Server) processResults() {
+	defer s.wg.Done()
 
-func (srv *Server) handleCreateTarget(sess *Session, id uint64, req *pb.CreateTargetRequest) {
-	snmpCfg := req.GetSnmp()
-	if snmpCfg == nil {
-		sess.Send(newError(id, ErrInvalidRequest, "protocol config required (snmp)"))
-		return
-	}
-
-	if snmpCfg.Host == "" || snmpCfg.Oid == "" {
-		sess.Send(newError(id, ErrInvalidRequest, "host and oid required"))
-		return
-	}
-
-	srv.runtimeMu.RLock()
-	minInterval := srv.minIntervalMs
-	defaultBufSize := srv.defaultBufferSize
-	srv.runtimeMu.RUnlock()
-
-	if req.IntervalMs > 0 && req.IntervalMs < minInterval {
-		sess.Send(newError(id, ErrInvalidRequest,
-			fmt.Sprintf("interval_ms must be >= %d", minInterval)))
-		return
-	}
-
-	port := uint16(snmpCfg.Port)
-	if port == 0 {
-		port = 161
-	}
-	key := fmt.Sprintf("%s:%d/%s", snmpCfg.Host, port, snmpCfg.Oid)
-
-	srv.mu.Lock()
-
-	if existingID, ok := srv.targetIndex[key]; ok {
-		t := srv.targets[existingID]
-		t.AddOwner(sess.ID)
-		t.mu.RLock()
-		name := t.Name
-		t.mu.RUnlock()
-		srv.mu.Unlock()
-
-		sess.Send(&pb.Envelope{
-			Id: id,
-			Payload: &pb.Envelope_CreateTargetResp{
-				CreateTargetResp: &pb.CreateTargetResponse{
-					Ok:         true,
-					TargetId:   existingID,
-					TargetName: name,
-					Created:    false,
-					Message:    "joined existing target",
-				},
-			},
-		})
-		log.Printf("Session %s joined target %s", sess.ID, existingID)
-		return
-	}
-
-	targetID := req.Id
-	if targetID == "" {
-		targetID = srv.genID()
-	} else if _, exists := srv.targets[targetID]; exists {
-		srv.mu.Unlock()
-		sess.Send(newError(id, ErrInvalidRequest, "target ID already exists"))
-		return
-	}
-
-	if req.BufferSize == 0 {
-		req.BufferSize = defaultBufSize
-	}
-
-	t := NewTarget(targetID, req, srv.cfg.SNMP.BufferSize)
-	t.AddOwner(sess.ID)
-
-	srv.targets[targetID] = t
-	srv.targetIndex[key] = targetID
-	srv.registerTargetName(targetID, t.Name)
-	srv.mu.Unlock()
-
-	srv.indices.Add(targetID, t.State, t.Protocol, t.Host, t.Tags)
-	srv.poller.AddTarget(targetID, t.IntervalMs)
-
-	sess.Send(&pb.Envelope{
-		Id: id,
-		Payload: &pb.Envelope_CreateTargetResp{
-			CreateTargetResp: &pb.CreateTargetResponse{
-				Ok:         true,
-				TargetId:   targetID,
-				TargetName: t.Name,
-				Created:    true,
-			},
-		},
-	})
-	log.Printf("Session %s created target %s (%s)", sess.ID, targetID, key)
-}
-
-func (srv *Server) handleUpdateTarget(sess *Session, id uint64, req *pb.UpdateTargetRequest) {
-	srv.mu.Lock()
-	t := srv.resolveTarget(req.TargetId)
-	if t == nil {
-		srv.mu.Unlock()
-		sess.Send(newError(id, ErrInvalidRequest, "target not found"))
-		return
-	}
-
-	t.mu.RLock()
-	isOwner := t.Owners[sess.ID] || t.IsConfigTarget()
-	targetID := t.ID
-	oldName := t.Name
-	t.mu.RUnlock()
-
-	if !isOwner {
-		srv.mu.Unlock()
-		sess.Send(newError(id, ErrInvalidRequest, "not owner of target"))
-		return
-	}
-
-	var changes []string
-
-	// Name change
-	if req.Name != nil {
-		newName := *req.Name
-		// Update name index
-		srv.unregisterTargetName(oldName)
-		srv.registerTargetName(targetID, newName)
-		t.mu.Lock()
-		t.Name = newName
-		t.mu.Unlock()
-		changes = append(changes, fmt.Sprintf("name=%s", newName))
-	}
-
-	if req.Description != nil {
-		t.mu.Lock()
-		t.Description = *req.Description
-		t.mu.Unlock()
-		changes = append(changes, "description")
-	}
-
-	if req.IntervalMs != nil && *req.IntervalMs > 0 {
-		srv.runtimeMu.RLock()
-		minInterval := srv.minIntervalMs
-		srv.runtimeMu.RUnlock()
-
-		if *req.IntervalMs < minInterval {
-			srv.mu.Unlock()
-			sess.Send(newError(id, ErrInvalidRequest,
-				fmt.Sprintf("interval_ms must be >= %d", minInterval)))
+	for {
+		select {
+		case result := <-s.scheduler.Results():
+			s.handlePollResult(result)
+		case <-s.shutdown:
 			return
 		}
-
-		t.mu.Lock()
-		t.IntervalMs = *req.IntervalMs
-		t.mu.Unlock()
-		srv.poller.UpdateInterval(targetID, *req.IntervalMs)
-		changes = append(changes, fmt.Sprintf("interval=%dms", *req.IntervalMs))
 	}
-
-	if req.BufferSize != nil && *req.BufferSize > 0 {
-		t.ResizeBuffer(int(*req.BufferSize))
-		changes = append(changes, fmt.Sprintf("buffer=%d", *req.BufferSize))
-	}
-
-	if req.Persistent != nil {
-		t.mu.Lock()
-		t.Persistent = *req.Persistent
-		t.mu.Unlock()
-		changes = append(changes, fmt.Sprintf("persistent=%v", *req.Persistent))
-	}
-
-	if len(req.SetTags) > 0 || len(req.AddTags) > 0 || len(req.RemoveTags) > 0 {
-		newTags := srv.indices.UpdateTags(targetID, req.AddTags, req.RemoveTags, req.SetTags)
-		t.mu.Lock()
-		t.Tags = newTags
-		t.mu.Unlock()
-		changes = append(changes, "tags")
-	}
-
-	// SNMP config updates
-	t.mu.Lock()
-	if t.SNMP != nil {
-		if req.TimeoutMs != nil && *req.TimeoutMs > 0 {
-			t.SNMP.TimeoutMs = *req.TimeoutMs
-			changes = append(changes, fmt.Sprintf("timeout=%dms", *req.TimeoutMs))
-		}
-		if req.Retries != nil && *req.Retries > 0 {
-			t.SNMP.Retries = *req.Retries
-			changes = append(changes, fmt.Sprintf("retries=%d", *req.Retries))
-		}
-		if req.Community != nil {
-			if v2c := t.SNMP.GetV2C(); v2c != nil {
-				v2c.Community = *req.Community
-				changes = append(changes, "community")
-			}
-		}
-		if v3 := t.SNMP.GetV3(); v3 != nil {
-			if req.SecurityName != nil {
-				v3.SecurityName = *req.SecurityName
-				changes = append(changes, "security_name")
-			}
-			if req.SecurityLevel != nil {
-				v3.SecurityLevel = *req.SecurityLevel
-				changes = append(changes, "security_level")
-			}
-			if req.AuthProtocol != nil {
-				v3.AuthProtocol = *req.AuthProtocol
-				changes = append(changes, "auth_protocol")
-			}
-			if req.AuthPassword != nil {
-				v3.AuthPassword = *req.AuthPassword
-				changes = append(changes, "auth_password")
-			}
-			if req.PrivProtocol != nil {
-				v3.PrivProtocol = *req.PrivProtocol
-				changes = append(changes, "priv_protocol")
-			}
-			if req.PrivPassword != nil {
-				v3.PrivPassword = *req.PrivPassword
-				changes = append(changes, "priv_password")
-			}
-		}
-	}
-	t.mu.Unlock()
-
-	srv.mu.Unlock()
-
-	msg := "no changes"
-	if len(changes) > 0 {
-		msg = "updated: " + strings.Join(changes, ", ")
-	}
-
-	sess.Send(&pb.Envelope{
-		Id: id,
-		Payload: &pb.Envelope_UpdateTargetResp{
-			UpdateTargetResp: &pb.UpdateTargetResponse{
-				Ok:      true,
-				Target:  srv.targetToProto(t, false),
-				Message: msg,
-			},
-		},
-	})
 }
 
-func (srv *Server) handleDeleteTarget(sess *Session, id uint64, req *pb.DeleteTargetRequest) {
-	srv.mu.Lock()
-
-	t := srv.resolveTarget(req.TargetId)
-	if t == nil {
-		srv.mu.Unlock()
-		sess.Send(newError(id, ErrInvalidRequest, "target not found"))
-		return
+// handlePollResult handles a poll result.
+func (s *Server) handlePollResult(result scheduler.PollResult) {
+	// Create sample
+	sample := &store.Sample{
+		Namespace:    result.Key.Namespace,
+		Target:       result.Key.Target,
+		Poller:       result.Key.Poller,
+		TimestampMs:  result.TimestampMs,
+		ValueCounter: result.Counter,
+		ValueText:    result.Text,
+		ValueGauge:   result.Gauge,
+		Valid:        result.Success,
+		Error:        result.Error,
+		PollMs:       result.PollMs,
 	}
 
-	t.mu.RLock()
-	targetID := t.ID
-	name := t.Name
-	isPersistent := t.Persistent
-	isOwner := t.Owners[sess.ID]
-	state := t.State
-	protocol := t.Protocol
-	host := t.Host
-	key := t.Key()
-	t.mu.RUnlock()
+	// Record result
+	s.mgr.RecordPollResult(
+		result.Key.Namespace,
+		result.Key.Target,
+		result.Key.Poller,
+		result.Success,
+		result.Timeout,
+		result.Error,
+		result.PollMs,
+		sample,
+	)
 
-	if isPersistent && !req.Force {
-		srv.mu.Unlock()
-		sess.Send(newError(id, ErrInvalidRequest, "target is persistent, use force=true to delete"))
-		return
-	}
-
-	if !isOwner && !req.Force {
-		t.RemoveOwner(sess.ID)
-		sess.Unsubscribe(targetID)
-
-		shouldRemove := !t.HasOwners() && !t.Persistent
-		if shouldRemove {
-			delete(srv.targets, targetID)
-			delete(srv.targetIndex, key)
-			srv.unregisterTargetName(name)
-			srv.mu.Unlock()
-			srv.indices.Remove(targetID, state, protocol, host)
-			srv.poller.RemoveTarget(targetID)
-			log.Printf("Removed target %s (no owners)", targetID)
-		} else {
-			srv.mu.Unlock()
-		}
-
-		sess.Send(&pb.Envelope{
-			Id: id,
-			Payload: &pb.Envelope_DeleteTargetResp{
-				DeleteTargetResp: &pb.DeleteTargetResponse{Ok: true, Message: "removed ownership"},
-			},
-		})
-		return
-	}
-
-	delete(srv.targets, targetID)
-	delete(srv.targetIndex, key)
-	srv.unregisterTargetName(name)
-	srv.mu.Unlock()
-
-	srv.indices.Remove(targetID, state, protocol, host)
-	srv.poller.RemoveTarget(targetID)
-	log.Printf("Deleted target %s (force=%v)", targetID, req.Force)
-
-	sess.Send(&pb.Envelope{
-		Id: id,
-		Payload: &pb.Envelope_DeleteTargetResp{
-			DeleteTargetResp: &pb.DeleteTargetResponse{Ok: true, Message: "deleted"},
-		},
-	})
+	// Broadcast to subscribers
+	// TODO: Serialize sample to protobuf and broadcast
+	subKey := result.Key.Target + "/" + result.Key.Poller
+	s.subHandler.BroadcastSample(result.Key.Namespace, result.Key.Target, result.Key.Poller, nil)
+	_ = subKey // Will be used when we implement protobuf serialization
 }
 
-// ============================================================================
-// History
-// ============================================================================
+// cleanupLoop periodically cleans up lost sessions.
+func (s *Server) cleanupLoop() {
+	defer s.wg.Done()
 
-func (srv *Server) handleGetHistory(sess *Session, id uint64, req *pb.GetHistoryRequest) {
-	srv.mu.RLock()
-	t, ok := srv.targets[req.TargetId]
-	srv.mu.RUnlock()
-
-	if !ok {
-		sess.Send(newError(id, ErrInvalidRequest, "target not found"))
-		return
-	}
-
-	n := int(req.LastN)
-	if n == 0 {
-		n = 100
-	}
-
-	samples := t.ReadLastN(n)
-
-	t.mu.RLock()
-	totalBuffered := t.count
-	t.mu.RUnlock()
-
-	pbSamples := make([]*pb.Sample, len(samples))
-	for i, s := range samples {
-		pbSamples[i] = &pb.Sample{
-			TargetId:    req.TargetId,
-			TimestampMs: s.TimestampMs,
-			Counter:     s.Counter,
-			Text:        s.Text,
-			Valid:       s.Valid,
-			Error:       s.Error,
-			PollMs:      s.PollMs,
-		}
-	}
-
-	sess.Send(&pb.Envelope{
-		Id: id,
-		Payload: &pb.Envelope_GetHistoryResp{
-			GetHistoryResp: &pb.GetHistoryResponse{
-				TargetId:      req.TargetId,
-				Samples:       pbSamples,
-				TotalBuffered: int32(totalBuffered),
-			},
-		},
-	})
-}
-
-// ============================================================================
-// Subscriptions
-// ============================================================================
-
-func (srv *Server) handleSubscribe(sess *Session, id uint64, req *pb.SubscribeRequest) {
-	srv.mu.RLock()
-	defer srv.mu.RUnlock()
-
-	subscribed := make(map[string]bool)
-
-	// Subscribe by target IDs
-	for _, targetID := range req.TargetIds {
-		if _, ok := srv.targets[targetID]; ok {
-			sess.Subscribe(targetID)
-			subscribed[targetID] = true
-		}
-	}
-
-	// Subscribe by tags
-	for _, tag := range req.Tags {
-		targetIDs := srv.indices.QueryByTag(tag)
-		for targetID := range targetIDs {
-			if _, ok := srv.targets[targetID]; ok {
-				sess.Subscribe(targetID)
-				subscribed[targetID] = true
-			}
-		}
-	}
-
-	subscribedList := make([]string, 0, len(subscribed))
-	for id := range subscribed {
-		subscribedList = append(subscribedList, id)
-	}
-
-	sess.Send(&pb.Envelope{
-		Id: id,
-		Payload: &pb.Envelope_SubscribeResp{
-			SubscribeResp: &pb.SubscribeResponse{
-				Ok:              len(subscribedList) > 0,
-				Subscribed:      subscribedList,
-				TotalSubscribed: int32(sess.SubscriptionCount()),
-			},
-		},
-	})
-}
-
-func (srv *Server) handleUnsubscribe(sess *Session, id uint64, req *pb.UnsubscribeRequest) {
-	var unsubscribed []string
-
-	if len(req.TargetIds) == 0 {
-		unsubscribed = sess.UnsubscribeAll()
-	} else {
-		for _, targetID := range req.TargetIds {
-			sess.Unsubscribe(targetID)
-			unsubscribed = append(unsubscribed, targetID)
-		}
-	}
-
-	sess.Send(&pb.Envelope{
-		Id: id,
-		Payload: &pb.Envelope_UnsubscribeResp{
-			UnsubscribeResp: &pb.UnsubscribeResponse{
-				Ok:              true,
-				Unsubscribed:    unsubscribed,
-				TotalSubscribed: int32(sess.SubscriptionCount()),
-			},
-		},
-	})
-}
-
-// ============================================================================
-// Config
-// ============================================================================
-
-func (srv *Server) handleGetConfig(sess *Session, id uint64) {
-	srv.runtimeMu.RLock()
-	cfg := &pb.RuntimeConfig{
-		// SNMP defaults (changeable)
-		DefaultTimeoutMs:  srv.defaultTimeoutMs,
-		DefaultRetries:    srv.defaultRetries,
-		DefaultBufferSize: srv.defaultBufferSize,
-
-		// Limits (changeable)
-		MinIntervalMs: srv.minIntervalMs,
-
-		// Poller (read-only)
-		PollerWorkers:   int32(srv.cfg.Poller.Workers),
-		PollerQueueSize: int32(srv.cfg.Poller.QueueSize),
-
-		// Session (read-only)
-		AuthTimeoutSec:     uint32(srv.cfg.Session.AuthTimeoutSec),
-		ReconnectWindowSec: uint32(srv.cfg.Session.ReconnectWindowSec),
-
-		// TLS (read-only)
-		TlsEnabled:  srv.cfg.TLSEnabled(),
-		TlsCertFile: srv.cfg.TLS.CertFile,
-
-		// Network (read-only)
-		ListenAddress: srv.cfg.Server.Listen,
-
-		// Server info
-		Version:     Version,
-		UptimeMs:    time.Since(srv.startedAt).Milliseconds(),
-		StartedAtMs: srv.startedAt.UnixMilli(),
-	}
-	srv.runtimeMu.RUnlock()
-
-	sess.Send(&pb.Envelope{
-		Id: id,
-		Payload: &pb.Envelope_GetConfigResp{
-			GetConfigResp: &pb.GetConfigResponse{Config: cfg},
-		},
-	})
-}
-
-func (srv *Server) handleSetConfig(sess *Session, id uint64, req *pb.SetConfigRequest) {
-	srv.runtimeMu.Lock()
-
-	if req.DefaultTimeoutMs != nil && *req.DefaultTimeoutMs > 0 {
-		srv.defaultTimeoutMs = *req.DefaultTimeoutMs
-	}
-	if req.DefaultRetries != nil && *req.DefaultRetries > 0 {
-		srv.defaultRetries = *req.DefaultRetries
-	}
-	if req.DefaultBufferSize != nil && *req.DefaultBufferSize > 0 {
-		srv.defaultBufferSize = *req.DefaultBufferSize
-	}
-	if req.MinIntervalMs != nil && *req.MinIntervalMs > 0 {
-		srv.minIntervalMs = *req.MinIntervalMs
-	}
-
-	cfg := &pb.RuntimeConfig{
-		DefaultTimeoutMs:   srv.defaultTimeoutMs,
-		DefaultRetries:     srv.defaultRetries,
-		DefaultBufferSize:  srv.defaultBufferSize,
-		MinIntervalMs:      srv.minIntervalMs,
-		PollerWorkers:      int32(srv.cfg.Poller.Workers),
-		PollerQueueSize:    int32(srv.cfg.Poller.QueueSize),
-		ReconnectWindowSec: uint32(srv.cfg.Session.ReconnectWindowSec),
-		Version:            Version,
-		UptimeMs:           time.Since(srv.startedAt).Milliseconds(),
-		StartedAtMs:        srv.startedAt.UnixMilli(),
-	}
-	srv.runtimeMu.Unlock()
-
-	sess.Send(&pb.Envelope{
-		Id: id,
-		Payload: &pb.Envelope_SetConfigResp{
-			SetConfigResp: &pb.SetConfigResponse{
-				Ok:      true,
-				Config:  cfg,
-				Message: "config updated",
-			},
-		},
-	})
-}
-
-// ============================================================================
-// Helpers
-// ============================================================================
-
-func (srv *Server) validateToken(token string) (string, bool) {
-	for _, t := range srv.cfg.Auth.Tokens {
-		if subtle.ConstantTimeCompare([]byte(t.Token), []byte(token)) == 1 {
-			return t.ID, true
-		}
-	}
-	return "", false
-}
-
-func (srv *Server) tryRestore(tokenID string, conn net.Conn, w *wire.Conn) *Session {
-	srv.mu.Lock()
-	defer srv.mu.Unlock()
-
-	for _, sess := range srv.sessions {
-		if sess.IsLost() && sess.TokenID == tokenID {
-			sess.mu.Lock()
-			sess.Conn = conn
-			sess.Wire = w
-			sess.LostAt = nil
-			sess.sendCh = make(chan *pb.Envelope, 1000)
-			sess.mu.Unlock()
-			return sess
-		}
-	}
-	return nil
-}
-
-func (srv *Server) cleanup() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			srv.cleanupSessions()
-			srv.cleanupTargets()
-		case <-srv.shutdown:
+			removed := s.sessions.Cleanup()
+			if removed > 0 {
+				log.Printf("Cleaned up %d expired sessions", removed)
+			}
+		case <-s.shutdown:
 			return
 		}
 	}
 }
 
-func (srv *Server) cleanupSessions() {
-	window := srv.cfg.ReconnectWindow()
-
-	srv.mu.Lock()
-	defer srv.mu.Unlock()
-
-	for id, sess := range srv.sessions {
-		if sess.IsLost() && sess.LostDuration() > window {
-			for _, t := range srv.targets {
-				t.RemoveOwner(id)
-			}
-			delete(srv.sessions, id)
-			log.Printf("Removed expired session %s", id)
-		}
-	}
-}
-
-func (srv *Server) cleanupTargets() {
-	srv.mu.Lock()
-
-	var toRemove []struct {
-		id, state, protocol, host, key string
-	}
-
-	for id, t := range srv.targets {
-		t.mu.RLock()
-		isPersistent := t.Persistent
-		state := t.State
-		protocol := t.Protocol
-		host := t.Host
-		key := t.Key()
-		t.mu.RUnlock()
-
-		if isPersistent {
-			continue
-		}
-
-		if !t.HasOwners() {
-			toRemove = append(toRemove, struct {
-				id, state, protocol, host, key string
-			}{id, state, protocol, host, key})
-			delete(srv.targets, id)
-			delete(srv.targetIndex, key)
-			log.Printf("Removed orphan target %s", id)
-		}
-	}
-	srv.mu.Unlock()
-
-	for _, r := range toRemove {
-		srv.indices.Remove(r.id, r.state, r.protocol, r.host)
-		srv.poller.RemoveTarget(r.id)
-	}
-}
-
-func (srv *Server) genID() string {
-	return uuid.New().String()[:8]
-}
-
-// resolveTarget looks up a target by ID or name.
-// Must be called with srv.mu held (at least RLock).
-func (srv *Server) resolveTarget(idOrName string) *Target {
-	// Try by ID first
-	if t, ok := srv.targets[idOrName]; ok {
-		return t
-	}
-	// Try by name
-	if targetID, ok := srv.nameIndex[idOrName]; ok {
-		return srv.targets[targetID]
-	}
+// Helper to send auth response (simplified - actual impl would use protobuf)
+func (s *Server) sendAuthResponse(w *wire.Conn, id uint64, ok bool, sessionID, message string) error {
+	// TODO: Use proper protobuf encoding
+	// For now, this is a placeholder
 	return nil
 }
 
-// registerTargetName adds a name to the name index.
-// Must be called with srv.mu held (Lock).
-func (srv *Server) registerTargetName(targetID, name string) {
-	if name != "" {
-		srv.nameIndex[name] = targetID
-	}
-}
-
-// unregisterTargetName removes a name from the name index.
-// Must be called with srv.mu held (Lock).
-func (srv *Server) unregisterTargetName(name string) {
-	if name != "" {
-		delete(srv.nameIndex, name)
-	}
+// handleMessage handles an incoming message.
+func (s *Server) handleMessage(session *handler.Session, env interface{}) {
+	// TODO: Implement full message routing
+	// This will dispatch to the appropriate handler based on message type
 }

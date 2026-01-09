@@ -1,12 +1,22 @@
 # snmpproxy
 
-SNMP proxy server that polls network devices and streams data to subscribed clients.
+High-performance SNMP proxy server with hierarchical organization, persistent storage, and real-time streaming.
+
+## Features
+
+- **Zero-dependency deployment** - Single binary, embedded DuckDB storage
+- **Hierarchical organization** - Namespaces, targets, and pollers with inheritance
+- **Virtual filesystem** - Tree structure for organizing targets by location/function
+- **Protocol-agnostic** - SNMP v2c/v3 now, HTTP/ICMP planned
+- **Real-time streaming** - Subscribe to live metrics with efficient push
+- **Config-as-code** - YAML configuration with hot reload
+- **Secure** - TLS, token auth, encrypted secrets, namespace isolation
 
 ## Architecture
 
 ```
 ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-│   snmpctl   │  │   snmpctl   │  │  GUI Client │
+│   snmpctl   │  │   snmpctl   │  │  Dashboard  │
 └──────┬──────┘  └──────┬──────┘  └──────┬──────┘
        │ TLS            │ TLS            │ TLS
        └────────────────┼────────────────┘
@@ -14,9 +24,9 @@ SNMP proxy server that polls network devices and streams data to subscribed clie
               ┌──────────────────┐
               │    snmpproxyd    │
               │                  │
-              │  • Sessions      │
-              │  • Targets       │
-              │  • Worker Pool   │
+              │  • Namespaces    │
+              │  • Scheduler     │
+              │  • DuckDB Store  │
               └────────┬─────────┘
                        │ SNMP v2c/v3
        ┌───────────────┼───────────────┐
@@ -27,114 +37,121 @@ SNMP proxy server that polls network devices and streams data to subscribed clie
 ## Quick Start
 
 ```bash
-# Install protoc-gen-go
-make install-tools
-
-# Generate protobuf and build
+# Build
 make all
 
 # Generate TLS certificates
 make gen-certs
 
+# Generate secret key for encrypted credentials
+make gen-secret-key
+
 # Create config
-cp config.example.yaml config.yaml
+cp examples/config.yaml config.yaml
 export SNMPPROXY_TOKEN="your-secret-token"
 
 # Run server
 ./bin/snmpproxyd -config config.yaml
 
-# Run client (another terminal)
-export SNMPPROXY_TOKEN="your-secret-token"
+# Run CLI (in another terminal)
 ./bin/snmpctl -server localhost:9161 -tls-skip-verify
 ```
 
-## snmpctl Commands
+## CLI Commands
 
 ```
-monitor <host> <oid> [name] [options]
-  SNMPv2c: -c community -i interval_ms
-  SNMPv3:  -v3 -u user -l level -a auth_proto -A auth_pass -x priv_proto -X priv_pass
+Navigation:
+  ls [path]              List entries at path
+  cd <path>              Change current path
+  pwd                    Print current path
+  cat <path>             Show details
+  tree [path]            Show tree structure
 
-unmonitor <target-id>
-list [host-filter]
-info <target-id>
-history <target-id> [count]
-subscribe <target-id>...
-unsubscribe [target-id]...
-help
-quit
+Namespace:
+  ns                     List namespaces
+  ns use <name>          Switch namespace
+  ns create <name>       Create namespace
+  ns delete <name>       Delete namespace
+
+Targets:
+  target create <name>   Create target
+  target delete <name>   Delete target
+  target set <n> k=v...  Set properties
+
+Pollers:
+  poller create <target> <name> <host:oid> [options]
+  poller delete <target> <name>
+  poller enable <target> <name>
+  poller disable <target> <name>
+  poller test <target> <name>
+
+Monitoring:
+  watch [path...]        Subscribe to live samples
+  unwatch [path...]      Unsubscribe
+  history <path> [n]     Show sample history
+
+Tree:
+  mkdir <path>           Create directory
+  ln <target> <path>     Create link
+  rm <path>              Remove node
+
+System:
+  status                 Server status
+  session                Session info
+  config                 Runtime config
+  help                   This help
+  quit                   Exit
 ```
 
 ## Example Session
 
 ```
-> monitor 192.168.1.1 1.3.6.1.2.1.31.1.1.1.6.1 router-in 1000 public
-Created: a1b2c3d4 (router-in)
+$ ./bin/snmpctl -server localhost:9161 -tls-skip-verify
+snmpctl - Connecting to localhost:9161...
+Connected (session: a1b2c3d4)
 
-> subscribe a1b2c3d4
-Subscribed: [a1b2c3d4]
+> ns
+Namespaces:
+  * prod     (current)
+    dev
 
-[14:32:45.123] router-in: 12345678901234 (23ms)
-[14:32:46.125] router-in: 12345679012345 (21ms)
+> ls /targets
+TYPE    NAME          STATUS  DESCRIPTION
+----    ----          ------  -----------
+target  core-router   3/3 up  Core Router - DC1
+target  access-switch 1/1 up  Access Switch
 
-> list
-ID         Host                 OID                                      Interval Subs  State
------------------------------------------------------------------------------------------------
-a1b2c3d4   192.168.1.1          1.3.6.1.2.1.31.1.1.1.6.1                 1000     1     polling
+> cd /targets/core-router
+> ls
+TYPE    NAME      STATUS  DESCRIPTION
+----    ----      ------  -----------
+poller  cpu       up      CPU utilization
+poller  memory    up      Memory usage
+poller  traffic   up      Interface counters
 
-> history a1b2c3d4 5
-Timestamp                Value                Valid    PollMs
-------------------------------------------------------------
-2024-01-15 14:32:45.123  12345678901234       ✓        23
-2024-01-15 14:32:46.125  12345679012345       ✓        21
+> cat cpu
+Type:        poller
+Name:        cpu
+Protocol:    snmp
+Host:        192.168.1.1:161
+OID:         1.3.6.1.4.1.9.2.1.58.0
 
-> unsubscribe
+Admin State: enabled
+Oper State:  running
+Health:      up
+
+Interval:    5000ms
+Last Poll:   2024-01-15 14:32:45.123
+Last Value:  42
+Avg Poll:    23ms
+
+> watch cpu memory
+Subscribing to: cpu, memory
+[14:32:46.125] cpu: 43 (21ms)
+[14:32:46.130] memory: 67% (18ms)
+[14:32:51.122] cpu: 41 (23ms)
+^C
 > quit
-```
-
-## Wire Protocol
-
-Messages are framed using **varint-prefixed length-delimited protobuf** over TLS/TCP,
-compatible with Go's `google.golang.org/protobuf/encoding/protodelim`.
-
-```
-┌─────────────────────────────────────────────┐
-│ [varint: message length][protobuf payload]  │
-└─────────────────────────────────────────────┘
-```
-
-**Varint encoding:**
-- Each byte uses 7 bits for data, 1 bit (MSB) as continuation flag
-- MSB=1 means more bytes follow, MSB=0 means last byte
-- Example: length 300 = 0xAC 0x02 (2 bytes)
-
-See `proto/snmpproxy.proto` for message definitions.
-
-### Message Format
-
-All messages are wrapped in an `Envelope`:
-
-```protobuf
-message Envelope {
-  uint64 id = 1;      // Request/Response correlation, Push uses id=0
-  oneof payload {
-    // Client → Server
-    AuthRequest auth = 10;
-    MonitorRequest monitor = 11;
-    // ... etc
-    
-    // Server → Client
-    AuthResponse auth_resp = 50;
-    MonitorResponse monitor_resp = 51;
-    // ... etc
-    
-    // Push (id=0)
-    Sample sample = 80;
-    
-    // Error
-    Error error = 99;
-  }
-}
 ```
 
 ## Configuration
@@ -150,48 +167,109 @@ auth:
   tokens:
     - id: admin
       token: "${SNMPPROXY_TOKEN}"
+    - id: readonly
+      token: "${SNMPPROXY_RO_TOKEN}"
+      namespaces: ["prod"]  # Restrict access
+
+storage:
+  db_path: "snmpproxy.db"
+  secret_key_path: "secret.key"
 
 snmp:
   timeout_ms: 5000
   retries: 2
-  buffer_size: 3600  # samples per target
+  interval_ms: 1000
+  buffer_size: 3600
 
 poller:
-  workers: 100       # concurrent SNMP polls
+  workers: 100
   queue_size: 10000
 
-session:
-  auth_timeout_sec: 30
-  reconnect_window_sec: 600  # preserve session for 10min after disconnect
+# Include namespace files
+include:
+  - "namespaces/*.yaml"
+
+# Or define inline
+namespaces:
+  prod:
+    description: "Production"
+    targets:
+      router:
+        description: "Core router"
+        pollers:
+          cpu:
+            protocol: snmp
+            config:
+              host: "192.168.1.1"
+              oid: "1.3.6.1.4.1.9.2.1.58.0"
+            admin_state: enabled
+```
+
+## Data Model
+
+```
+Namespace
+├── Targets
+│   └── Pollers (actual SNMP/HTTP/ICMP monitors)
+├── Tree (virtual filesystem for organization)
+│   └── Directories and Links to targets/pollers
+└── Secrets (encrypted credentials)
+```
+
+**Config Inheritance:**
+```
+Server Defaults → Namespace Defaults → Target Defaults → Poller Config
 ```
 
 ## SNMPv3 Support
 
-Full SNMPv3 support with all security levels:
-
-| Level | Description |
-|-------|-------------|
-| `noAuthNoPriv` | No authentication, no encryption |
-| `authNoPriv` | Authentication only |
-| `authPriv` | Authentication + Encryption |
-
-**Authentication protocols:** MD5, SHA, SHA-224, SHA-256, SHA-384, SHA-512
-
-**Privacy protocols:** DES, AES, AES-192, AES-256
-
-### Example v3 Usage
-
-```bash
-# authPriv with SHA-256 and AES
-> monitor 192.168.1.1 1.3.6.1.2.1.1.1.0 sysDescr -v3 -u admin -l authPriv \
-    -a SHA256 -A authpass123 -x AES -X privpass123
+```yaml
+targets:
+  router:
+    defaults:
+      snmp:
+        v3:
+          security_name: "monitor"
+          security_level: "authPriv"
+          auth_protocol: "SHA256"
+          auth_password: "secret:router-auth"  # Reference to secret
+          priv_protocol: "AES"
+          priv_password: "secret:router-priv"
 ```
 
-## Session Management
+**Security Levels:** noAuthNoPriv, authNoPriv, authPriv  
+**Auth Protocols:** MD5, SHA, SHA-224, SHA-256, SHA-384, SHA-512  
+**Privacy Protocols:** DES, AES, AES-192, AES-256
 
-- Sessions persist for `reconnect_window_sec` (default: 10 min) after disconnect
-- Subscriptions are preserved across reconnects
-- Multiple clients can share the same target (deduplication by host:port/oid)
+## Wire Protocol
+
+Length-prefixed protobuf over TLS/TCP:
+```
+┌─────────────────────────────────────────────┐
+│ [varint: message length][protobuf payload]  │
+└─────────────────────────────────────────────┘
+```
+
+See `proto/snmpproxy.proto` for message definitions.
+
+## Development
+
+```bash
+# Generate protobuf
+make proto
+
+# Run tests
+make test
+
+# Run with coverage
+make test-cover
+
+# Format code
+make fmt
+
+# Build release binaries
+make release
+```
 
 ## License
 

@@ -1,0 +1,167 @@
+# snmpproxyd v2 Configuration Reference
+# ====================================
+#
+# This configuration file demonstrates all available options.
+# Copy to config.yaml and customize for your environment.
+
+# Server listening address
+listen: "0.0.0.0:9161"
+
+# TLS Configuration (optional, strongly recommended for production)
+tls:
+  cert_file: "certs/server.crt"
+  key_file: "certs/server.key"
+
+# Authentication tokens
+# Each token can optionally be restricted to specific namespaces
+auth:
+  tokens:
+    - id: admin
+      token: "${SNMPPROXY_TOKEN:-changeme}"
+      # namespaces: []  # Empty = all namespaces (admin access)
+    
+    - id: prod-user
+      token: "${SNMPPROXY_PROD_TOKEN}"
+      namespaces: ["prod"]  # Only prod namespace
+    
+    - id: dev-user
+      token: "${SNMPPROXY_DEV_TOKEN}"
+      namespaces: ["dev", "staging"]  # Multiple namespaces
+
+# Session configuration
+session:
+  auth_timeout_sec: 30        # Max time to complete authentication
+  reconnect_window_sec: 600   # Session preservation window (10 min)
+
+# Scheduler / Poller configuration
+poller:
+  workers: 100                # Concurrent SNMP polls
+  queue_size: 10000           # Poll job queue size
+
+# Storage configuration
+storage:
+  db_path: "snmpproxy.db"           # DuckDB database file
+  secret_key_path: "secret.key"     # AES-256 key for encrypting secrets
+
+# Server-wide SNMP defaults
+# These can be overridden at namespace, target, or poller level
+snmp:
+  timeout_ms: 5000
+  retries: 2
+  interval_ms: 1000
+  buffer_size: 3600           # Samples retained per poller
+
+# ===========================================================================
+# Namespace Configuration (loaded from separate files or inline)
+# ===========================================================================
+#
+# Namespaces provide isolation and organization.
+# Each namespace has its own targets, pollers, tree, and secrets.
+#
+# Example namespace structure:
+#
+# namespaces:
+#   prod:
+#     description: "Production network devices"
+#     defaults:
+#       interval_ms: 5000
+#       timeout_ms: 3000
+#       snmp:
+#         community: "prod-readonly"
+#     
+#     targets:
+#       core-router:
+#         description: "Core Router"
+#         labels:
+#           site: dc1
+#           role: core
+#         defaults:
+#           snmp:
+#             v3:
+#               security_name: "monitor"
+#               security_level: "authPriv"
+#               auth_protocol: "SHA256"
+#               auth_password: "secret:router-auth"
+#               priv_protocol: "AES"
+#               priv_password: "secret:router-priv"
+#         
+#         pollers:
+#           cpu:
+#             description: "CPU 5-minute average"
+#             protocol: snmp
+#             config:
+#               host: "192.168.1.1"
+#               oid: "1.3.6.1.4.1.9.2.1.58.0"
+#             interval_ms: 10000
+#             admin_state: enabled
+#           
+#           memory:
+#             description: "Memory utilization"
+#             protocol: snmp
+#             config:
+#               host: "192.168.1.1"
+#               oid: "1.3.6.1.4.1.9.9.48.1.1.1.6.1"
+#             admin_state: enabled
+#
+# ===========================================================================
+# Tree Structure
+# ===========================================================================
+#
+# The tree provides hierarchical organization via symlinks.
+# This allows organizing targets/pollers by location, function, etc.
+#
+# tree:
+#   /dc1:
+#     description: "Datacenter 1"
+#     children:
+#       /network:
+#         description: "Network devices"
+#         links:
+#           - name: core-router
+#             type: target
+#             ref: core-router
+#           - name: router-cpu
+#             type: poller
+#             ref: core-router/cpu
+#
+# ===========================================================================
+# Secrets
+# ===========================================================================
+#
+# Secrets are encrypted and stored in the database.
+# Reference them in configs using "secret:name" syntax.
+#
+# secrets:
+#   router-auth:
+#     type: auth_password
+#     value: "encrypted-at-rest"
+#   
+#   router-priv:
+#     type: priv_password
+#     value: "encrypted-at-rest"
+#   
+#   community-readonly:
+#     type: community
+#     value: "encrypted-at-rest"
+#
+# ===========================================================================
+# Config Inheritance
+# ===========================================================================
+#
+# Configuration values are inherited in this order (later overrides earlier):
+#
+# 1. Server defaults (snmp section above)
+# 2. Namespace defaults
+# 3. Target defaults
+# 4. Poller explicit config
+#
+# Example flow:
+#   Server:    timeout_ms: 5000
+#   Namespace: timeout_ms: 3000  <- overrides server
+#   Target:    (not set)         <- uses namespace value
+#   Poller:    timeout_ms: 1000  <- overrides everything
+#
+# Result: poller uses timeout_ms: 1000
+#
+# You can inspect resolved config via CLI:
+#   snmpctl config show prod/router/cpu

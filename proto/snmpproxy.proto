@@ -1,54 +1,94 @@
 syntax = "proto3";
 
-package snmpproxy.v1;
+package snmpproxy;
 
 option go_package = "github.com/xtxerr/snmpproxy/internal/proto";
 
 // ============================================================================
-// Envelope - Wire format wrapper
+// Envelope - Wire format wrapper for all messages
 // ============================================================================
 
 message Envelope {
-  uint64 id = 1;
+  uint64 id = 1;  // Request/Response correlation. Push messages use id=0.
   
   oneof payload {
-    // Auth
+    // Authentication
     AuthRequest auth_req = 10;
     AuthResponse auth_resp = 11;
     
-    // Browse (unified navigation)
+    // Navigation / Browse
     BrowseRequest browse_req = 20;
     BrowseResponse browse_resp = 21;
     
+    // Namespace CRUD
+    CreateNamespaceRequest create_namespace_req = 30;
+    CreateNamespaceResponse create_namespace_resp = 31;
+    UpdateNamespaceRequest update_namespace_req = 32;
+    UpdateNamespaceResponse update_namespace_resp = 33;
+    DeleteNamespaceRequest delete_namespace_req = 34;
+    DeleteNamespaceResponse delete_namespace_resp = 35;
+    
     // Target CRUD
-    CreateTargetRequest create_target_req = 30;
-    CreateTargetResponse create_target_resp = 31;
-    UpdateTargetRequest update_target_req = 32;
-    UpdateTargetResponse update_target_resp = 33;
-    DeleteTargetRequest delete_target_req = 34;
-    DeleteTargetResponse delete_target_resp = 35;
+    CreateTargetRequest create_target_req = 40;
+    CreateTargetResponse create_target_resp = 41;
+    UpdateTargetRequest update_target_req = 42;
+    UpdateTargetResponse update_target_resp = 43;
+    DeleteTargetRequest delete_target_req = 44;
+    DeleteTargetResponse delete_target_resp = 45;
+    
+    // Poller CRUD
+    CreatePollerRequest create_poller_req = 50;
+    CreatePollerResponse create_poller_resp = 51;
+    UpdatePollerRequest update_poller_req = 52;
+    UpdatePollerResponse update_poller_resp = 53;
+    DeletePollerRequest delete_poller_req = 54;
+    DeletePollerResponse delete_poller_resp = 55;
+    
+    // Poller Control
+    PollerControlRequest poller_control_req = 60;
+    PollerControlResponse poller_control_resp = 61;
     
     // History
-    GetHistoryRequest get_history_req = 40;
-    GetHistoryResponse get_history_resp = 41;
+    GetHistoryRequest get_history_req = 70;
+    GetHistoryResponse get_history_resp = 71;
     
     // Subscriptions
-    SubscribeRequest subscribe_req = 50;
-    SubscribeResponse subscribe_resp = 51;
-    UnsubscribeRequest unsubscribe_req = 52;
-    UnsubscribeResponse unsubscribe_resp = 53;
+    SubscribeRequest subscribe_req = 80;
+    SubscribeResponse subscribe_resp = 81;
+    UnsubscribeRequest unsubscribe_req = 82;
+    UnsubscribeResponse unsubscribe_resp = 83;
     
-    // Config
-    GetConfigRequest get_config_req = 60;
-    GetConfigResponse get_config_resp = 61;
-    SetConfigRequest set_config_req = 62;
-    SetConfigResponse set_config_resp = 63;
+    // Tree Operations
+    CreateTreeNodeRequest create_tree_node_req = 90;
+    CreateTreeNodeResponse create_tree_node_resp = 91;
+    CreateLinkRequest create_link_req = 92;
+    CreateLinkResponse create_link_resp = 93;
+    DeleteTreeNodeRequest delete_tree_node_req = 94;
+    DeleteTreeNodeResponse delete_tree_node_resp = 95;
+    
+    // Secrets
+    CreateSecretRequest create_secret_req = 100;
+    CreateSecretResponse create_secret_resp = 101;
+    ListSecretsRequest list_secrets_req = 102;
+    ListSecretsResponse list_secrets_resp = 103;
+    DeleteSecretRequest delete_secret_req = 104;
+    DeleteSecretResponse delete_secret_resp = 105;
+    
+    // Server Info
+    GetServerInfoRequest get_server_info_req = 110;
+    GetServerInfoResponse get_server_info_resp = 111;
+    
+    // Import/Export
+    ImportRequest import_req = 120;
+    ImportResponse import_resp = 121;
+    ExportRequest export_req = 122;
+    ExportResponse export_resp = 123;
     
     // Push (id=0)
-    Sample sample = 80;
+    Sample sample = 200;
     
     // Error
-    Error error = 99;
+    Error error = 255;
   }
 }
 
@@ -61,18 +101,8 @@ message Error {
   string message = 2;
 }
 
-message Sample {
-  string target_id = 1;
-  int64 timestamp_ms = 2;
-  uint64 counter = 3;
-  string text = 4;
-  bool valid = 5;
-  string error = 6;
-  int32 poll_ms = 7;
-}
-
 // ============================================================================
-// Auth
+// Authentication
 // ============================================================================
 
 message AuthRequest {
@@ -83,136 +113,405 @@ message AuthResponse {
   bool ok = 1;
   string session_id = 2;
   string message = 3;
+  repeated string namespaces = 4;  // Accessible namespaces
 }
 
 // ============================================================================
-// Browse - Unified Navigation
+// Core Entities
+// ============================================================================
+
+message Namespace {
+  string name = 1;
+  string description = 2;
+  NamespaceConfig config = 3;
+  NamespaceStats stats = 4;
+  int64 created_at_ms = 10;
+  int64 updated_at_ms = 11;
+  int32 version = 12;
+}
+
+message NamespaceConfig {
+  PollerDefaults defaults = 1;
+}
+
+message NamespaceStats {
+  int32 target_count = 1;
+  int32 poller_count = 2;
+  int32 pollers_running = 3;
+  int32 pollers_up = 4;
+  int32 pollers_down = 5;
+  int32 tree_node_count = 10;
+}
+
+message Target {
+  string namespace = 1;
+  string name = 2;
+  string description = 3;
+  map<string, string> labels = 4;
+  TargetConfig config = 5;
+  TargetStats stats = 6;
+  int64 created_at_ms = 10;
+  int64 updated_at_ms = 11;
+  int32 version = 12;
+}
+
+message TargetConfig {
+  PollerDefaults defaults = 1;
+}
+
+message TargetStats {
+  int32 poller_count = 1;
+  int32 pollers_running = 2;
+  int32 pollers_up = 3;
+  int32 pollers_down = 4;
+  int64 polls_total = 10;
+  int64 polls_success = 11;
+  int64 polls_failed = 12;
+}
+
+message Poller {
+  string namespace = 1;
+  string target = 2;
+  string name = 3;
+  string description = 4;
+  
+  // Protocol
+  PollerProtocol protocol = 10;
+  oneof protocol_config {
+    SNMPConfig snmp = 11;
+    SNMPv3Config snmpv3 = 12;
+    HTTPConfig http = 13;
+    ICMPConfig icmp = 14;
+  }
+  
+  // Polling config (explicit values)
+  PollingConfig polling = 20;
+  
+  // Effective config (with inheritance resolved)
+  PollingConfig effective_polling = 21;
+  
+  // States
+  AdminState admin_state = 30;
+  OperState oper_state = 31;
+  HealthState health_state = 32;
+  string last_error = 33;
+  int32 consecutive_failures = 34;
+  
+  // Stats
+  PollerStats stats = 40;
+  
+  // Timestamps
+  int64 created_at_ms = 50;
+  int64 updated_at_ms = 51;
+  int64 last_poll_ms = 52;
+  int64 last_success_ms = 53;
+  int64 last_failure_ms = 54;
+  
+  // Version for optimistic locking
+  int32 version = 60;
+}
+
+// ============================================================================
+// Poller Defaults (for inheritance)
+// ============================================================================
+
+message PollerDefaults {
+  // SNMP v2c default
+  optional string snmp_community = 1;
+  
+  // SNMPv3 defaults
+  optional SNMPv3Defaults snmpv3 = 2;
+  
+  // Timing defaults
+  optional uint32 interval_ms = 10;
+  optional uint32 timeout_ms = 11;
+  optional uint32 retries = 12;
+  optional uint32 buffer_size = 13;
+}
+
+message SNMPv3Defaults {
+  string security_name = 1;
+  SecurityLevel security_level = 2;
+  AuthProtocol auth_protocol = 3;
+  string auth_password = 4;       // Direct password (encrypted in storage)
+  string auth_secret_ref = 5;     // OR reference: "secret:name"
+  PrivProtocol priv_protocol = 6;
+  string priv_password = 7;       // Direct password (encrypted in storage)
+  string priv_secret_ref = 8;     // OR reference: "secret:name"
+}
+
+// ============================================================================
+// Protocol Configs
+// ============================================================================
+
+enum PollerProtocol {
+  PROTOCOL_UNSPECIFIED = 0;
+  PROTOCOL_SNMP = 1;
+  PROTOCOL_SNMPV3 = 2;
+  PROTOCOL_HTTP = 3;
+  PROTOCOL_ICMP = 4;
+}
+
+message SNMPConfig {
+  string host = 1;
+  uint32 port = 2;
+  string oid = 3;
+  string community = 4;           // Direct or empty to inherit
+}
+
+message SNMPv3Config {
+  string host = 1;
+  uint32 port = 2;
+  string oid = 3;
+  string security_name = 4;       // Empty to inherit
+  SecurityLevel security_level = 5;
+  AuthProtocol auth_protocol = 6;
+  string auth_password = 7;       // Direct password
+  string auth_secret_ref = 8;     // OR secret reference
+  PrivProtocol priv_protocol = 9;
+  string priv_password = 10;      // Direct password
+  string priv_secret_ref = 11;    // OR secret reference
+  string context_name = 12;
+}
+
+message HTTPConfig {
+  string url = 1;
+  string method = 2;
+  map<string, string> headers = 3;
+  string body = 4;
+  int32 expected_status = 5;
+  string response_match = 6;      // Regex
+  bool tls_skip_verify = 7;
+}
+
+message ICMPConfig {
+  string host = 1;
+  uint32 count = 2;
+  uint32 size = 3;
+}
+
+message PollingConfig {
+  optional uint32 interval_ms = 1;
+  optional uint32 timeout_ms = 2;
+  optional uint32 retries = 3;
+  optional uint32 buffer_size = 4;
+}
+
+// ============================================================================
+// Enums
+// ============================================================================
+
+enum SecurityLevel {
+  SECURITY_LEVEL_UNSPECIFIED = 0;
+  SECURITY_LEVEL_NO_AUTH_NO_PRIV = 1;
+  SECURITY_LEVEL_AUTH_NO_PRIV = 2;
+  SECURITY_LEVEL_AUTH_PRIV = 3;
+}
+
+enum AuthProtocol {
+  AUTH_PROTOCOL_UNSPECIFIED = 0;
+  AUTH_PROTOCOL_MD5 = 1;
+  AUTH_PROTOCOL_SHA = 2;
+  AUTH_PROTOCOL_SHA224 = 3;
+  AUTH_PROTOCOL_SHA256 = 4;
+  AUTH_PROTOCOL_SHA384 = 5;
+  AUTH_PROTOCOL_SHA512 = 6;
+}
+
+enum PrivProtocol {
+  PRIV_PROTOCOL_UNSPECIFIED = 0;
+  PRIV_PROTOCOL_DES = 1;
+  PRIV_PROTOCOL_AES = 2;
+  PRIV_PROTOCOL_AES192 = 3;
+  PRIV_PROTOCOL_AES256 = 4;
+}
+
+enum AdminState {
+  ADMIN_STATE_UNSPECIFIED = 0;
+  ADMIN_STATE_ENABLED = 1;
+  ADMIN_STATE_DISABLED = 2;
+}
+
+enum OperState {
+  OPER_STATE_UNSPECIFIED = 0;
+  OPER_STATE_STOPPED = 1;
+  OPER_STATE_STARTING = 2;
+  OPER_STATE_RUNNING = 3;
+  OPER_STATE_STOPPING = 4;
+  OPER_STATE_ERROR = 5;
+}
+
+enum HealthState {
+  HEALTH_STATE_UNSPECIFIED = 0;
+  HEALTH_STATE_UNKNOWN = 1;
+  HEALTH_STATE_UP = 2;
+  HEALTH_STATE_DEGRADED = 3;
+  HEALTH_STATE_DOWN = 4;
+}
+
+// ============================================================================
+// Stats
+// ============================================================================
+
+message PollerStats {
+  int64 polls_total = 1;
+  int64 polls_success = 2;
+  int64 polls_failed = 3;
+  int64 polls_timeout = 4;
+  int32 avg_poll_ms = 10;
+  int32 min_poll_ms = 11;
+  int32 max_poll_ms = 12;
+  int32 p95_poll_ms = 13;
+  int32 samples_buffered = 20;
+}
+
+// ============================================================================
+// Sample (Poll Result)
+// ============================================================================
+
+message Sample {
+  string namespace = 1;
+  string target = 2;
+  string poller = 3;
+  int64 timestamp_ms = 4;
+  uint64 value_counter = 5;
+  string value_text = 6;
+  double value_gauge = 7;
+  bool valid = 8;
+  string error = 9;
+  int32 poll_ms = 10;
+}
+
+// ============================================================================
+// Tree (Symlink System)
+// ============================================================================
+
+message TreeNode {
+  string namespace = 1;
+  string path = 2;
+  TreeNodeType type = 3;
+  string link_ref = 4;           // For links: "target:name" or "poller:target/name"
+  string description = 5;
+  int64 created_at_ms = 10;
+}
+
+enum TreeNodeType {
+  TREE_NODE_DIRECTORY = 0;
+  TREE_NODE_LINK_TARGET = 1;
+  TREE_NODE_LINK_POLLER = 2;
+}
+
+// ============================================================================
+// Secrets
+// ============================================================================
+
+message Secret {
+  string namespace = 1;
+  string name = 2;
+  SecretType type = 3;
+  int64 created_at_ms = 10;
+  int64 updated_at_ms = 11;
+  int32 used_by_count = 12;      // How many pollers reference this
+}
+
+enum SecretType {
+  SECRET_TYPE_UNSPECIFIED = 0;
+  SECRET_TYPE_PASSWORD = 1;
+  SECRET_TYPE_SNMPV3_AUTH = 2;
+  SECRET_TYPE_SNMPV3_PRIV = 3;
+  SECRET_TYPE_API_KEY = 4;
+}
+
+// ============================================================================
+// Navigation / Browse
 // ============================================================================
 
 message BrowseRequest {
-  string path = 1;                // "/", "/targets", "/targets/abc123", "/tags/location/dc1"
-  bool long_format = 2;           // -l: include full details
+  string path = 1;
+  bool long_format = 2;          // Include full entity data
+  int32 limit = 3;               // Pagination limit (default: 100)
+  string cursor = 4;             // Pagination cursor
   
-  // Filters (apply to target listings)
-  repeated string filter_tags = 10;   // AND-combined
-  string filter_state = 11;           // "polling", "unreachable", "error"
-  string filter_protocol = 12;        // "snmp", "http", "icmp"
-  string filter_host = 13;            // Glob pattern: "192.168.*"
-  
-  // Pagination
-  int32 limit = 20;                   // Default 100, 0 = all (use with caution)
-  string cursor = 21;                 // Last ID from previous page
+  // Filters (for /namespaces/<ns>/targets)
+  repeated string filter_labels = 10;    // key=value
+  string filter_state = 11;              // polling, down, etc.
 }
 
 message BrowseResponse {
   string path = 1;
   repeated BrowseNode nodes = 2;
-  
-  // Pagination
-  int32 total_count = 10;             // Total matching (if known, -1 if unknown)
-  string next_cursor = 11;            // Empty if last page
-  bool has_more = 12;
+  bool has_more = 3;
+  string next_cursor = 4;
 }
 
 message BrowseNode {
   string name = 1;
-  NodeType type = 2;
-  string description = 3;             // Short description for listings
-  
-  // Directory info
-  int32 child_count = 10;             // Number of children (targets + subdirs)
-  int32 target_count = 11;            // Number of targets (direct + nested)
-  
-  // Target info (when type=NODE_TARGET and long_format or direct access)
-  Target target = 20;
-  
-  // Info node (key-value pairs)
-  map<string, string> info = 30;
-}
-
-enum NodeType {
-  NODE_UNKNOWN = 0;
-  NODE_DIRECTORY = 1;
-  NODE_TARGET = 2;
-  NODE_INFO = 3;
-}
-
-// ============================================================================
-// Target
-// ============================================================================
-
-message Target {
-  // Identity
-  string id = 1;                       // UUID, auto-generated, immutable
-  string name = 2;                     // User-defined, optional, mutable
+  BrowseNodeType type = 2;
   string description = 3;
-  repeated string tags = 4;
-  bool persistent = 5;
-  string protocol = 6;                 // "snmp", "http", "icmp"
   
-  // Polling config
-  uint32 interval_ms = 10;
-  uint32 buffer_size = 11;
+  // Child counts (for directories)
+  int32 child_count = 4;
   
-  // Runtime state
-  string state = 20;                   // "polling", "unreachable", "error"
-  int64 last_poll_ms = 21;
-  string last_error = 22;
-  int32 error_count = 23;
-  int32 samples_buffered = 24;
-  
-  // Ownership
-  int32 owner_count = 30;
-  int32 subscriber_count = 31;
-  repeated string owners = 32;         // Session IDs (in long_format)
-  repeated string subscribers = 33;    // Session IDs (in long_format)
-  
-  // Statistics
-  int64 created_at_ms = 40;
-  int64 polls_total = 41;
-  int64 polls_success = 42;
-  int64 polls_failed = 43;
-  int32 avg_poll_ms = 44;
-  int32 min_poll_ms = 45;
-  int32 max_poll_ms = 46;
-  
-  // Protocol config (in long_format or /config sub-path)
-  oneof protocol_config {
-    SNMPTargetConfig snmp = 50;
-    // Future: HTTPTargetConfig http = 51;
-    // Future: ICMPTargetConfig icmp = 52;
+  // Type-specific full data (if long_format)
+  oneof data {
+    Namespace namespace_data = 10;
+    Target target_data = 11;
+    Poller poller_data = 12;
+    TreeNode tree_node_data = 13;
+    ServerInfo server_info_data = 14;
+    SessionInfo session_info_data = 15;
   }
 }
 
-// ============================================================================
-// SNMP Configuration
-// ============================================================================
-
-message SNMPTargetConfig {
-  string host = 1;
-  uint32 port = 2;                    // Default 161
-  string oid = 3;
-  uint32 timeout_ms = 4;
-  uint32 retries = 5;
-  
-  oneof version {
-    SNMPv2cConfig v2c = 10;
-    SNMPv3Config v3 = 11;
-  }
+enum BrowseNodeType {
+  BROWSE_NODE_DIRECTORY = 0;
+  BROWSE_NODE_NAMESPACE = 1;
+  BROWSE_NODE_TARGET = 2;
+  BROWSE_NODE_POLLER = 3;
+  BROWSE_NODE_TREE_DIR = 4;
+  BROWSE_NODE_TREE_LINK = 5;
+  BROWSE_NODE_INFO = 6;
 }
 
-message SNMPv2cConfig {
-  string community = 1;               // Masked in output: "pub***"
+// ============================================================================
+// Namespace CRUD
+// ============================================================================
+
+message CreateNamespaceRequest {
+  string name = 1;
+  string description = 2;
+  NamespaceConfig config = 3;
 }
 
-message SNMPv3Config {
-  string security_name = 1;
-  string security_level = 2;          // "noAuthNoPriv", "authNoPriv", "authPriv"
-  string auth_protocol = 3;           // "MD5", "SHA", "SHA256", etc.
-  string auth_password = 4;           // Masked: "****"
-  string priv_protocol = 5;           // "DES", "AES", "AES256", etc.
-  string priv_password = 6;           // Masked: "****"
-  string context_name = 7;
+message CreateNamespaceResponse {
+  bool ok = 1;
+  string message = 2;
+  Namespace namespace = 3;
+}
+
+message UpdateNamespaceRequest {
+  string name = 1;
+  optional string description = 2;
+  optional NamespaceConfig config = 3;
+  int32 expected_version = 10;   // For optimistic locking
+}
+
+message UpdateNamespaceResponse {
+  bool ok = 1;
+  string message = 2;
+  Namespace namespace = 3;
+}
+
+message DeleteNamespaceRequest {
+  string name = 1;
+  bool force = 2;                // Delete even if not empty
+}
+
+message DeleteNamespaceResponse {
+  bool ok = 1;
+  string message = 2;
+  int32 targets_deleted = 3;
+  int32 pollers_deleted = 4;
 }
 
 // ============================================================================
@@ -220,70 +519,140 @@ message SNMPv3Config {
 // ============================================================================
 
 message CreateTargetRequest {
-  string id = 1;                       // Optional, auto-generated if empty
-  string name = 2;                     // Optional, user-friendly name
+  string namespace = 1;
+  string name = 2;
   string description = 3;
-  repeated string tags = 4;
-  bool persistent = 5;
-  uint32 interval_ms = 6;
-  uint32 buffer_size = 7;
-  
-  oneof protocol {
-    SNMPTargetConfig snmp = 20;
-    // Future: HTTPTargetConfig http = 21;
-  }
+  map<string, string> labels = 4;
+  TargetConfig config = 5;
 }
 
 message CreateTargetResponse {
   bool ok = 1;
-  string target_id = 2;
-  string target_name = 3;              // Echo back name (or generated)
-  bool created = 4;                    // false = joined existing
-  string message = 5;
+  string message = 2;
+  Target target = 3;
 }
 
 message UpdateTargetRequest {
-  string target_id = 1;                // Can be ID or name
-  
-  // Fields to update (null/0 = don't change)
-  optional string name = 2;
+  string namespace = 1;
+  string name = 2;
   optional string description = 3;
-  optional uint32 interval_ms = 4;
-  optional uint32 buffer_size = 5;
-  optional bool persistent = 6;
-  
-  // Tag operations
-  repeated string add_tags = 10;
-  repeated string remove_tags = 11;
-  repeated string set_tags = 12;       // Replaces all if non-empty
-  
-  // SNMP config updates
-  optional uint32 timeout_ms = 20;
-  optional uint32 retries = 21;
-  optional string community = 22;      // SNMPv2c community
-  // SNMPv3 credentials
-  optional string security_name = 30;
-  optional string security_level = 31;
-  optional string auth_protocol = 32;
-  optional string auth_password = 33;
-  optional string priv_protocol = 34;
-  optional string priv_password = 35;
+  map<string, string> labels = 4;
+  bool clear_labels = 5;         // If true, replace all labels
+  optional TargetConfig config = 6;
+  int32 expected_version = 10;
 }
 
 message UpdateTargetResponse {
   bool ok = 1;
-  Target target = 2;
-  string message = 3;
+  string message = 2;
+  Target target = 3;
 }
 
 message DeleteTargetRequest {
-  string target_id = 1;
-  bool force = 2;                     // Delete even if persistent
+  string namespace = 1;
+  string name = 2;
+  bool force = 3;                // Delete even if has pollers
 }
 
 message DeleteTargetResponse {
   bool ok = 1;
   string message = 2;
+  int32 pollers_deleted = 3;
+  int32 links_deleted = 4;
+}
+
+// ============================================================================
+// Poller CRUD
+// ============================================================================
+
+message CreatePollerRequest {
+  string namespace = 1;
+  string target = 2;
+  string name = 3;
+  string description = 4;
+  
+  PollerProtocol protocol = 10;
+  oneof protocol_config {
+    SNMPConfig snmp = 11;
+    SNMPv3Config snmpv3 = 12;
+    HTTPConfig http = 13;
+    ICMPConfig icmp = 14;
+  }
+  
+  PollingConfig polling = 20;
+  AdminState admin_state = 21;   // Default: DISABLED (explicit start needed)
+}
+
+message CreatePollerResponse {
+  bool ok = 1;
+  string message = 2;
+  Poller poller = 3;
+}
+
+message UpdatePollerRequest {
+  string namespace = 1;
+  string target = 2;
+  string name = 3;
+  
+  optional string description = 10;
+  optional PollingConfig polling = 11;
+  
+  // Protocol config update (partial)
+  oneof protocol_config_update {
+    SNMPConfig snmp = 20;
+    SNMPv3Config snmpv3 = 21;
+    HTTPConfig http = 22;
+    ICMPConfig icmp = 23;
+  }
+  
+  int32 expected_version = 30;
+}
+
+message UpdatePollerResponse {
+  bool ok = 1;
+  string message = 2;
+  Poller poller = 3;
+  bool reconnect_required = 4;   // True if host/credentials changed
+}
+
+message DeletePollerRequest {
+  string namespace = 1;
+  string target = 2;
+  string name = 3;
+  bool force = 4;
+}
+
+message DeletePollerResponse {
+  bool ok = 1;
+  string message = 2;
+  int32 links_deleted = 3;
+}
+
+// ============================================================================
+// Poller Control
+// ============================================================================
+
+message PollerControlRequest {
+  string namespace = 1;
+  string target = 2;
+  string poller = 3;             // Or pattern: "*" for all
+  PollerAction action = 4;
+}
+
+enum PollerAction {
+  POLLER_ACTION_UNSPECIFIED = 0;
+  POLLER_ACTION_START = 1;
+  POLLER_ACTION_STOP = 2;
+  POLLER_ACTION_ENABLE = 3;
+  POLLER_ACTION_DISABLE = 4;
+  POLLER_ACTION_TEST = 5;        // Single poll without storing
+}
+
+message PollerControlResponse {
+  bool ok = 1;
+  string message = 2;
+  int32 affected_count = 3;
+  Sample test_result = 4;        // Only for POLLER_ACTION_TEST
 }
 
 // ============================================================================
@@ -291,14 +660,18 @@ message DeleteTargetResponse {
 // ============================================================================
 
 message GetHistoryRequest {
-  string target_id = 1;
-  uint32 last_n = 2;                  // Default 100
+  string namespace = 1;
+  string target = 2;
+  string poller = 3;
+  uint32 limit = 4;              // Default: 100
+  int64 since_ms = 5;            // Optional: only after this time
+  int64 until_ms = 6;            // Optional: only before this time
 }
 
 message GetHistoryResponse {
-  string target_id = 1;
-  repeated Sample samples = 2;
-  int32 total_buffered = 3;           // Total samples in buffer
+  repeated Sample samples = 1;
+  int32 total_buffered = 2;
+  bool has_more = 3;
 }
 
 // ============================================================================
@@ -306,77 +679,228 @@ message GetHistoryResponse {
 // ============================================================================
 
 message SubscribeRequest {
-  repeated string target_ids = 1;
-  repeated string tags = 2;           // Subscribe to all matching tags
+  repeated PollerRef pollers = 1;
+}
+
+message PollerRef {
+  string namespace = 1;
+  string target = 2;
+  string poller = 3;
 }
 
 message SubscribeResponse {
   bool ok = 1;
-  repeated string subscribed = 2;     // Actually subscribed target IDs
-  int32 total_subscribed = 3;         // Total subscription count after
+  repeated PollerRef subscribed = 2;
+  int32 total_subscribed = 3;
 }
 
 message UnsubscribeRequest {
-  repeated string target_ids = 1;     // Empty = unsubscribe all
+  repeated PollerRef pollers = 1;
+  bool all = 2;
 }
 
 message UnsubscribeResponse {
   bool ok = 1;
-  repeated string unsubscribed = 2;
-  int32 total_subscribed = 3;         // Remaining subscription count
+  repeated PollerRef unsubscribed = 2;
+  int32 total_subscribed = 3;
 }
 
 // ============================================================================
-// Config
+// Tree Operations
 // ============================================================================
 
-message GetConfigRequest {}
-
-message GetConfigResponse {
-  RuntimeConfig config = 1;
+message CreateTreeNodeRequest {
+  string namespace = 1;
+  string path = 2;
+  string description = 3;
 }
 
-message SetConfigRequest {
-  optional uint32 default_timeout_ms = 1;
-  optional uint32 default_retries = 2;
-  optional uint32 default_buffer_size = 3;
-  optional uint32 min_interval_ms = 4;
-}
-
-message SetConfigResponse {
+message CreateTreeNodeResponse {
   bool ok = 1;
-  RuntimeConfig config = 2;
-  string message = 3;
+  string message = 2;
+  TreeNode node = 3;
 }
 
-message RuntimeConfig {
-  // SNMP defaults (changeable)
-  uint32 default_timeout_ms = 1;
-  uint32 default_retries = 2;
-  uint32 default_buffer_size = 3;
+message CreateLinkRequest {
+  string namespace = 1;
+  string tree_path = 2;
+  string link_name = 3;          // Name in tree (e.g., "router")
+  LinkType link_type = 4;
+  string link_ref = 5;           // Target name or "target/poller"
+}
+
+enum LinkType {
+  LINK_TYPE_TARGET = 0;
+  LINK_TYPE_POLLER = 1;
+}
+
+message CreateLinkResponse {
+  bool ok = 1;
+  string message = 2;
+  TreeNode node = 3;
+}
+
+message DeleteTreeNodeRequest {
+  string namespace = 1;
+  string path = 2;
+  bool recursive = 3;
+  bool force = 4;
+}
+
+message DeleteTreeNodeResponse {
+  bool ok = 1;
+  string message = 2;
+  int32 nodes_deleted = 3;
+}
+
+// ============================================================================
+// Secrets
+// ============================================================================
+
+message CreateSecretRequest {
+  string namespace = 1;
+  string name = 2;
+  SecretType type = 3;
+  string value = 4;              // Plaintext (encrypted in storage)
+}
+
+message CreateSecretResponse {
+  bool ok = 1;
+  string message = 2;
+  Secret secret = 3;
+}
+
+message ListSecretsRequest {
+  string namespace = 1;
+}
+
+message ListSecretsResponse {
+  repeated Secret secrets = 1;
+}
+
+message DeleteSecretRequest {
+  string namespace = 1;
+  string name = 2;
+  bool force = 3;                // Delete even if referenced
+}
+
+message DeleteSecretResponse {
+  bool ok = 1;
+  string message = 2;
+  int32 pollers_affected = 3;    // Pollers that now have invalid refs
+}
+
+// ============================================================================
+// Server Info
+// ============================================================================
+
+message GetServerInfoRequest {}
+
+message GetServerInfoResponse {
+  ServerInfo info = 1;
+}
+
+message ServerInfo {
+  string version = 1;
+  int64 uptime_ms = 2;
+  int64 started_at_ms = 3;
   
-  // Limits (changeable)
-  uint32 min_interval_ms = 4;
-  uint32 max_targets = 5;              // 0 = unlimited
-  uint32 max_subscriptions_per_session = 6;
+  // Counts
+  int32 namespace_count = 10;
+  int32 target_count = 11;
+  int32 poller_count = 12;
+  int32 pollers_running = 13;
+  int32 pollers_up = 14;
+  int32 pollers_down = 15;
   
-  // Poller (read-only, set at startup)
-  int32 poller_workers = 10;
-  int32 poller_queue_size = 11;
+  // Sessions
+  int32 sessions_active = 20;
+  int32 sessions_total = 21;
   
-  // Session (read-only)
-  uint32 auth_timeout_sec = 15;
-  uint32 reconnect_window_sec = 16;
+  // Poller stats
+  int64 polls_total = 30;
+  int64 polls_success = 31;
+  int64 polls_failed = 32;
   
-  // TLS (read-only)
-  bool tls_enabled = 20;
-  string tls_cert_file = 21;           // Path only, not contents
+  // Scheduler
+  int32 scheduler_queue_size = 40;
+  int32 scheduler_workers = 41;
   
-  // Network (read-only)
-  string listen_address = 25;
-  
-  // Server info (read-only)
-  string version = 30;
-  int64 uptime_ms = 31;
-  int64 started_at_ms = 32;
+  // Config
+  ServerConfig config = 50;
+}
+
+message ServerConfig {
+  string listen_address = 1;
+  bool tls_enabled = 2;
+  uint32 default_timeout_ms = 10;
+  uint32 default_retries = 11;
+  uint32 default_interval_ms = 12;
+  uint32 default_buffer_size = 13;
+  int32 poller_workers = 20;
+  int32 poller_queue_size = 21;
+}
+
+message SessionInfo {
+  string session_id = 1;
+  string user_id = 2;
+  string remote_addr = 3;
+  int64 connected_at_ms = 4;
+  repeated string namespaces = 5;
+  int32 subscriptions = 6;
+}
+
+// ============================================================================
+// Import/Export
+// ============================================================================
+
+message ImportRequest {
+  string namespace = 1;          // Target namespace (empty = from file)
+  bytes content = 2;             // YAML or CSV content
+  ImportFormat format = 3;
+  ImportMode mode = 4;
+  bool dry_run = 5;
+}
+
+enum ImportFormat {
+  IMPORT_FORMAT_YAML = 0;
+  IMPORT_FORMAT_CSV = 1;
+}
+
+enum ImportMode {
+  IMPORT_MODE_CREATE = 0;        // Fail if exists
+  IMPORT_MODE_MERGE = 1;         // Update existing, create new
+  IMPORT_MODE_REPLACE = 2;       // Delete all, then create
+}
+
+message ImportResponse {
+  bool ok = 1;
+  string message = 2;
+  ImportStats stats = 3;
+  repeated ImportError errors = 4;
+}
+
+message ImportStats {
+  int32 namespaces_created = 1;
+  int32 targets_created = 2;
+  int32 targets_updated = 3;
+  int32 pollers_created = 4;
+  int32 pollers_updated = 5;
+  int32 tree_nodes_created = 6;
+  int32 secrets_created = 7;
+}
+
+message ImportError {
+  int32 line = 1;
+  string entity = 2;
+  string error = 3;
+}
+
+message ExportRequest {
+  string namespace = 1;
+  bool include_secrets = 2;      // Export secret values (plaintext)
+}
+
+message ExportResponse {
+  bytes content = 1;             // YAML content
 }

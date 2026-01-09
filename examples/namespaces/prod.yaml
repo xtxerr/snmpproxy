@@ -1,0 +1,120 @@
+# Example namespace configuration
+# Place in namespaces/prod.yaml and include via:
+#   include:
+#     - "namespaces/*.yaml"
+
+prod:
+  description: "Production network devices"
+  
+  defaults:
+    interval_ms: 5000
+    timeout_ms: 3000
+    retries: 2
+    snmp:
+      community: "prod-readonly"
+  
+  secrets:
+    router-auth:
+      type: auth_password
+      value: "${ROUTER_AUTH_PASSWORD}"
+    router-priv:
+      type: priv_password
+      value: "${ROUTER_PRIV_PASSWORD}"
+  
+  targets:
+    core-router:
+      description: "Core Router - DC1"
+      labels:
+        site: dc1
+        role: core
+        vendor: cisco
+      
+      defaults:
+        snmp:
+          v3:
+            security_name: "monitor"
+            security_level: "authPriv"
+            auth_protocol: "SHA256"
+            auth_password: "secret:router-auth"
+            priv_protocol: "AES"
+            priv_password: "secret:router-priv"
+      
+      pollers:
+        cpu:
+          description: "CPU 5-minute average"
+          protocol: snmp
+          config:
+            host: "192.168.1.1"
+            oid: "1.3.6.1.4.1.9.2.1.58.0"
+          interval_ms: 10000
+          admin_state: enabled
+        
+        memory:
+          description: "Memory utilization"
+          protocol: snmp
+          config:
+            host: "192.168.1.1"
+            oid: "1.3.6.1.4.1.9.9.48.1.1.1.6.1"
+          admin_state: enabled
+        
+        ifInOctets-Gi0-0:
+          description: "GigabitEthernet0/0 Input"
+          protocol: snmp
+          config:
+            host: "192.168.1.1"
+            oid: "1.3.6.1.2.1.31.1.1.1.6.1"
+          interval_ms: 1000
+          admin_state: enabled
+        
+        ifOutOctets-Gi0-0:
+          description: "GigabitEthernet0/0 Output"
+          protocol: snmp
+          config:
+            host: "192.168.1.1"
+            oid: "1.3.6.1.2.1.31.1.1.1.10.1"
+          interval_ms: 1000
+          admin_state: enabled
+    
+    access-switch:
+      description: "Access Switch - DC1"
+      labels:
+        site: dc1
+        role: access
+        vendor: cisco
+      
+      pollers:
+        uptime:
+          description: "System uptime"
+          protocol: snmp
+          config:
+            host: "192.168.1.10"
+            oid: "1.3.6.1.2.1.1.3.0"
+            community: "public"
+          admin_state: enabled
+  
+  tree:
+    dc1:
+      description: "Datacenter 1"
+      children:
+        network:
+          description: "Network devices"
+          links:
+            - name: core-router
+              type: target
+              ref: core-router
+            - name: access-switch
+              type: target
+              ref: access-switch
+            - name: router-cpu
+              type: poller
+              ref: core-router/cpu
+        
+        monitoring:
+          description: "Key metrics"
+          links:
+            - name: router-traffic-in
+              type: poller
+              ref: core-router/ifInOctets-Gi0-0
+            - name: router-traffic-out
+              type: poller
+              ref: core-router/ifOutOctets-Gi0-0
