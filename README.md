@@ -23,7 +23,7 @@
 
 snmpproxy is a high-performance SNMP monitoring system designed for large-scale network monitoring. It provides:
 
-- **Centralized SNMP Polling**: Single server polls thousands of network devices
+- **Centralized Polling**: Single server polls thousands of network devices
 - **Real-time Streaming**: Push-based sample delivery to subscribed clients
 - **Hierarchical Configuration**: Inheritance from server → namespace → target → poller
 - **Virtual Filesystem**: Flexible organization via symlinks independent of physical structure
@@ -38,13 +38,6 @@ snmpproxy is a high-performance SNMP monitoring system designed for large-scale 
 | Operational simplicity | Single binary, embedded database, YAML config |
 | Flexibility | Multi-tenant namespaces, virtual filesystem |
 | Security | TLS, token auth, encrypted secrets |
-
-### 1.3 Non-Goals
-
-- Distributed/clustered operation (single-node only)
-- Long-term time-series storage (use external TSDB)
-- SNMP trap handling (polling only)
-- SNMP SET operations (read-only)
 
 ---
 
