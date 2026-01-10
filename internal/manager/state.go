@@ -74,7 +74,7 @@ func NewPollerState(namespace, target, poller string) *PollerState {
 
 // Key returns the unique key for this poller.
 func (s *PollerState) Key() string {
-	return fmt.Sprintf("%s/%s/%s", s.Namespace, s.Target, s.Poller)
+	return s.Namespace + "/" + s.Target + "/" + s.Poller
 }
 
 // ============================================================================

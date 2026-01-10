@@ -1,74 +1,196 @@
-# snmpproxyd configuration
+# =============================================================================
+# snmpproxy Configuration
+# =============================================================================
+#
+# This file configures the snmpproxy server. Environment variables can be used
+# with ${VAR} or ${VAR:-default} syntax.
+#
+# Generate TLS certificates: make gen-certs
+# Generate secret key:       openssl rand -out secret.key 32
 
+# -----------------------------------------------------------------------------
+# Server Configuration
+# -----------------------------------------------------------------------------
 server:
+  # Address and port to listen on
+  # Format: "host:port" or ":port" for all interfaces
   listen: "0.0.0.0:9161"
 
+# -----------------------------------------------------------------------------
+# TLS Configuration
+# -----------------------------------------------------------------------------
+# TLS is strongly recommended for production. If cert_file or key_file is empty,
+# the server runs without TLS (not recommended).
 tls:
   cert_file: "certs/server.crt"
   key_file: "certs/server.key"
 
+# -----------------------------------------------------------------------------
+# Authentication
+# -----------------------------------------------------------------------------
+# At least one token must be configured. Tokens are used for client authentication.
+# Use environment variables to avoid storing secrets in config files.
 auth:
   tokens:
     - id: admin
       token: "${SNMPPROXY_TOKEN:-changeme}"
+    # Additional tokens can be defined for different users/services:
+    # - id: readonly
+    #   token: "${SNMPPROXY_READONLY_TOKEN}"
 
+# -----------------------------------------------------------------------------
+# Session Management
+# -----------------------------------------------------------------------------
 session:
+  # Time (seconds) a client has to authenticate after connecting
+  # Range: 5-120, Default: 30
   auth_timeout_sec: 30
+
+  # Time (seconds) to preserve session state after disconnect
+  # Allows clients to reconnect and resume without losing subscriptions
+  # Range: 60-3600, Default: 600 (10 minutes)
   reconnect_window_sec: 600
 
+# -----------------------------------------------------------------------------
+# Poller (Scheduler) Configuration
+# -----------------------------------------------------------------------------
+# The poller manages concurrent SNMP polling operations.
 poller:
+  # Number of concurrent polling workers
+  # Higher values allow more parallel polls but use more resources
+  # Recommended: 50-200 depending on target count
+  # Range: 1-1000, Default: 100
   workers: 100
+
+  # Size of the job queue
+  # Should be >= expected number of concurrent polls
+  # Range: 100-100000, Default: 10000
   queue_size: 10000
 
-# SNMP defaults for new targets
+# -----------------------------------------------------------------------------
+# Storage Configuration
+# -----------------------------------------------------------------------------
+# Controls how data is persisted to the database. The storage subsystem uses
+# batched writes to optimize performance while balancing durability.
+#
+# IMPORTANT: Tuning these values affects the trade-off between:
+#   - Performance: Larger batches = fewer DB writes = better throughput
+#   - Memory: Larger batches = more samples held in RAM
+#   - Durability: Longer timeouts = more potential data loss on crash
+#
+storage:
+  # Path to the DuckDB database file
+  # The directory will be created if it doesn't exist
+  db_path: "data/snmpproxy.db"
+
+  # Path to 32-byte encryption key for secrets (SNMPv3 passwords, etc.)
+  # If not set, secrets are stored unencrypted (not recommended for production)
+  # Generate with: openssl rand -out secret.key 32
+  secret_key_path: ""
+
+  # Number of samples to accumulate before writing to database
+  # Samples are flushed when this count is reached OR flush_timeout expires
+  #
+  # Guidelines:
+  #   - Default (1000): Good balance for most deployments
+  #   - High throughput (>10k samples/s): Increase to 5000-10000
+  #   - Memory constrained: Decrease to 500
+  #   - Maximum durability: Decrease to 100 (more frequent writes)
+  #
+  # Memory impact: ~1KB per sample in buffer
+  # Example: batch_size=5000 → ~5MB buffer per namespace
+  #
+  # Range: 100-10000, Default: 1000
+  sample_batch_size: 1000
+
+  # Maximum seconds to hold samples before flushing to database
+  # Acts as an upper bound - samples flush sooner if batch_size is reached
+  #
+  # Guidelines:
+  #   - Default (5s): Good balance of durability and performance
+  #   - Low latency requirements: Decrease to 1-2 seconds
+  #   - High throughput: Can increase to 10 seconds
+  #   - Maximum durability: Set to 1 second
+  #
+  # Range: 1-60, Default: 5
+  sample_flush_timeout_sec: 5
+
+  # How often (seconds) to persist poller state changes to database
+  # State includes: oper_state, health_state, last_error, consecutive_failures
+  # Lower values = faster recovery after crash, more DB writes
+  #
+  # Range: 1-60, Default: 5
+  state_flush_interval_sec: 5
+
+  # How often (seconds) to persist poller statistics to database
+  # Stats include: polls_total, polls_success, polls_failed, timing metrics
+  # These are less critical than state, so longer intervals are acceptable
+  #
+  # Range: 1-120, Default: 10
+  stats_flush_interval_sec: 10
+
+# -----------------------------------------------------------------------------
+# SNMP Defaults
+# -----------------------------------------------------------------------------
+# Default values applied to all SNMP pollers unless overridden at the
+# namespace, target, or poller level.
 snmp:
+  # SNMP request timeout in milliseconds
+  # Should be less than the polling interval to prevent queue buildup
+  # Range: 1000-30000, Default: 5000
   timeout_ms: 5000
+
+  # Number of SNMP request retries on failure
+  # Total attempts = 1 + retries
+  # Range: 0-5, Default: 2
   retries: 2
+
+  # Number of samples to buffer per poller (ring buffer)
+  # Older samples are overwritten when buffer is full
+  # Memory impact: ~100 bytes per sample
+  # Example: buffer_size=3600 with 1s interval = 1 hour of history
+  # Range: 100-86400, Default: 3600
   buffer_size: 3600
 
-# Predefined targets (loaded on startup, implicitly persistent)
-targets:
-  # SNMPv2c example
-  - id: router-wan-in
-    description: "Main Router - WAN Interface Inbound Traffic"
-    tags:
-      - type/network/router
-      - location/dc1/rack15
-      - criticality/high
-    interval_ms: 1000
-    snmp:
-      host: "192.168.1.1"
-      port: 161
-      oid: "1.3.6.1.2.1.31.1.1.1.6.1"
-      community: "public"
-
-  - id: router-wan-out
-    description: "Main Router - WAN Interface Outbound Traffic"
-    tags:
-      - type/network/router
-      - location/dc1/rack15
-      - criticality/high
-    interval_ms: 1000
-    snmp:
-      host: "192.168.1.1"
-      port: 161
-      oid: "1.3.6.1.2.1.31.1.1.1.10.1"
-      community: "public"
-
-  # SNMPv3 example
-  - id: core-switch-uptime
-    description: "Core Switch - System Uptime"
-    tags:
-      - type/network/switch
-      - location/dc1
-    interval_ms: 60000
-    snmp:
-      host: "192.168.1.2"
-      oid: "1.3.6.1.2.1.1.3.0"
-      version: 3
-      security_name: "monitor"
-      security_level: "authPriv"
-      auth_protocol: "SHA256"
-      auth_password: "${SNMP_AUTH_PASS}"
-      priv_protocol: "AES"
-      priv_password: "${SNMP_PRIV_PASS}"
+# -----------------------------------------------------------------------------
+# Pre-configured Targets (Optional)
+# -----------------------------------------------------------------------------
+# Targets can be defined here for automatic creation on startup,
+# or created dynamically via the API/CLI.
+#
+# targets:
+#   - id: router-uptime
+#     description: "Main router system uptime"
+#     tags:
+#       - network
+#       - infrastructure
+#     interval_ms: 60000  # 1 minute
+#     snmp:
+#       host: 192.168.1.1
+#       port: 161
+#       oid: 1.3.6.1.2.1.1.3.0  # sysUpTime
+#       community: public
+#
+#   - id: switch-ifInOctets
+#     description: "Switch interface input bytes"
+#     interval_ms: 10000  # 10 seconds
+#     snmp:
+#       host: 192.168.1.2
+#       oid: 1.3.6.1.2.1.31.1.1.1.6.1  # ifHCInOctets
+#       community: "${SNMP_COMMUNITY:-public}"
+#
+#   # SNMPv3 example with authentication and encryption
+#   - id: firewall-cpu
+#     description: "Firewall CPU utilization (SNMPv3)"
+#     interval_ms: 30000
+#     snmp:
+#       host: 192.168.1.254
+#       oid: 1.3.6.1.4.1.9.9.109.1.1.1.1.3.1  # Cisco CPU 1min
+#       version: 3
+#       security_name: snmpuser
+#       security_level: authPriv
+#       auth_protocol: SHA256
+#       auth_password: "${SNMP_AUTH_PASS}"
+#       priv_protocol: AES
+#       priv_password: "${SNMP_PRIV_PASS}"
+#

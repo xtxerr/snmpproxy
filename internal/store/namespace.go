@@ -222,48 +222,26 @@ func (s *Store) NamespaceExists(name string) (bool, error) {
 func (s *Store) GetNamespaceStats(name string) (*NamespaceStats, error) {
 	stats := &NamespaceStats{}
 
-	// Target count
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM targets WHERE namespace = ?`, name).Scan(&stats.TargetCount)
-	if err != nil {
-		return nil, err
-	}
+	// Single query for all stats
+	err := s.db.QueryRow(`
+		SELECT 
+			(SELECT COUNT(*) FROM targets WHERE namespace = ?),
+			(SELECT COUNT(*) FROM pollers WHERE namespace = ?),
+			(SELECT COUNT(*) FROM poller_state WHERE namespace = ? AND oper_state = 'running'),
+			(SELECT COUNT(*) FROM poller_state WHERE namespace = ? AND health_state = 'up'),
+			(SELECT COUNT(*) FROM poller_state WHERE namespace = ? AND health_state = 'down'),
+			(SELECT COUNT(*) FROM tree_nodes WHERE namespace = ?)
+	`, name, name, name, name, name, name).Scan(
+		&stats.TargetCount,
+		&stats.PollerCount,
+		&stats.PollersRunning,
+		&stats.PollersUp,
+		&stats.PollersDown,
+		&stats.TreeNodeCount,
+	)
 
-	// Poller counts
-	err = s.db.QueryRow(`SELECT COUNT(*) FROM pollers WHERE namespace = ?`, name).Scan(&stats.PollerCount)
 	if err != nil {
-		return nil, err
-	}
-
-	// Running pollers
-	err = s.db.QueryRow(`
-		SELECT COUNT(*) FROM poller_state 
-		WHERE namespace = ? AND oper_state = 'running'
-	`, name).Scan(&stats.PollersRunning)
-	if err != nil {
-		return nil, err
-	}
-
-	// Health stats
-	err = s.db.QueryRow(`
-		SELECT COUNT(*) FROM poller_state 
-		WHERE namespace = ? AND health_state = 'up'
-	`, name).Scan(&stats.PollersUp)
-	if err != nil {
-		return nil, err
-	}
-
-	err = s.db.QueryRow(`
-		SELECT COUNT(*) FROM poller_state 
-		WHERE namespace = ? AND health_state = 'down'
-	`, name).Scan(&stats.PollersDown)
-	if err != nil {
-		return nil, err
-	}
-
-	// Tree nodes
-	err = s.db.QueryRow(`SELECT COUNT(*) FROM tree_nodes WHERE namespace = ?`, name).Scan(&stats.TreeNodeCount)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query namespace stats: %w", err)
 	}
 
 	return stats, nil

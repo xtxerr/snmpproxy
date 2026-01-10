@@ -177,6 +177,10 @@ func (s *Store) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_samples_lookup 
 		ON samples(namespace, target, poller, timestamp_ms DESC);
 
+	-- Index for time-based cleanup
+	CREATE INDEX IF NOT EXISTS idx_samples_timestamp 
+		ON samples(timestamp_ms);
+
 	-- Tree Nodes (Symlink System)
 	CREATE TABLE IF NOT EXISTS tree_nodes (
 		namespace VARCHAR NOT NULL,

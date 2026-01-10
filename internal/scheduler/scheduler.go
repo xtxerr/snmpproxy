@@ -5,6 +5,7 @@ import (
 	"container/heap"
 	"fmt"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 )
@@ -18,17 +19,20 @@ type PollerKey struct {
 
 // String returns the string representation.
 func (k PollerKey) String() string {
-	return fmt.Sprintf("%s/%s/%s", k.Namespace, k.Target, k.Poller)
+	return k.Namespace + "/" + k.Target + "/" + k.Poller
 }
 
 // ParsePollerKey parses a key string.
 func ParsePollerKey(s string) (PollerKey, error) {
-	var k PollerKey
-	n, err := fmt.Sscanf(s, "%s/%s/%s", &k.Namespace, &k.Target, &k.Poller)
-	if err != nil || n != 3 {
-		return k, fmt.Errorf("invalid poller key: %s", s)
+	parts := strings.SplitN(s, "/", 3)
+	if len(parts) != 3 {
+		return PollerKey{}, fmt.Errorf("invalid poller key: %s", s)
 	}
-	return k, nil
+	return PollerKey{
+		Namespace: parts[0],
+		Target:    parts[1],
+		Poller:    parts[2],
+	}, nil
 }
 
 // PollItem represents a poller in the scheduler heap.
@@ -327,9 +331,9 @@ func (s *Scheduler) schedulerLoop() {
 func (s *Scheduler) processDueItems() {
 	now := time.Now().UnixMilli()
 
+	// Phase 1: Collect due items under lock
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	var dueItems []*PollItem
 	for s.heap.Len() > 0 {
 		next := s.heap.Peek()
 
@@ -337,24 +341,30 @@ func (s *Scheduler) processDueItems() {
 			break
 		}
 
-		item := heap.Pop(&s.heap).(*PollItem)
-
 		// Skip if already polling
-		if item.Polling {
+		if next.Polling {
+			heap.Pop(&s.heap)
 			continue
 		}
 
+		item := heap.Pop(&s.heap).(*PollItem)
 		item.Polling = true
+		dueItems = append(dueItems, item)
+	}
+	s.mu.Unlock()
 
-		// Try to queue the job
+	// Phase 2: Queue jobs without holding lock
+	for _, item := range dueItems {
 		select {
 		case s.jobs <- PollJob{Key: item.Key}:
-			// Success
+			// Successfully queued
 		default:
 			// Queue full - reschedule with short delay
+			s.mu.Lock()
 			item.Polling = false
 			item.NextPollMs = now + 10
 			heap.Push(&s.heap, item)
+			s.mu.Unlock()
 		}
 	}
 }

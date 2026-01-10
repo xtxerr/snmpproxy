@@ -16,8 +16,12 @@ type PollerManager struct {
 	configResolver *ConfigResolver
 	mu             sync.RWMutex
 
-	// Cache: namespace/target/name -> poller
+	// Primary cache: namespace/target/name -> poller
 	pollers map[string]*store.Poller
+
+	// Secondary indexes for efficient lookups
+	byNamespace map[string]map[string]struct{} // namespace -> set of poller keys
+	byTarget    map[string]map[string]struct{} // namespace/target -> set of poller keys
 
 	// Callbacks for scheduler integration
 	onPollerCreated func(namespace, target, poller string, intervalMs uint32)
@@ -33,6 +37,8 @@ func NewPollerManager(s *store.Store, stateMgr *StateManager, statsMgr *StatsMan
 		statsManager:   statsMgr,
 		configResolver: cfgResolver,
 		pollers:        make(map[string]*store.Poller),
+		byNamespace:    make(map[string]map[string]struct{}),
+		byTarget:       make(map[string]map[string]struct{}),
 	}
 }
 
@@ -63,9 +69,15 @@ func (m *PollerManager) Load() error {
 	defer m.mu.Unlock()
 
 	m.pollers = make(map[string]*store.Poller)
+	m.byNamespace = make(map[string]map[string]struct{})
+	m.byTarget = make(map[string]map[string]struct{})
+
 	for _, p := range pollers {
 		key := pollerKey(p.Namespace, p.Target, p.Name)
 		m.pollers[key] = p
+
+		// Update secondary indexes
+		m.addToIndexes(p.Namespace, p.Target, key)
 
 		// Load state from store
 		state, err := m.store.GetPollerState(p.Namespace, p.Target, p.Name)
@@ -95,6 +107,42 @@ func (m *PollerManager) Load() error {
 	return nil
 }
 
+// addToIndexes adds a poller key to secondary indexes (caller must hold lock).
+func (m *PollerManager) addToIndexes(namespace, target, key string) {
+	// Namespace index
+	if m.byNamespace[namespace] == nil {
+		m.byNamespace[namespace] = make(map[string]struct{})
+	}
+	m.byNamespace[namespace][key] = struct{}{}
+
+	// Target index
+	targetKey := namespace + "/" + target
+	if m.byTarget[targetKey] == nil {
+		m.byTarget[targetKey] = make(map[string]struct{})
+	}
+	m.byTarget[targetKey][key] = struct{}{}
+}
+
+// removeFromIndexes removes a poller key from secondary indexes (caller must hold lock).
+func (m *PollerManager) removeFromIndexes(namespace, target, key string) {
+	// Namespace index
+	if ns, ok := m.byNamespace[namespace]; ok {
+		delete(ns, key)
+		if len(ns) == 0 {
+			delete(m.byNamespace, namespace)
+		}
+	}
+
+	// Target index
+	targetKey := namespace + "/" + target
+	if t, ok := m.byTarget[targetKey]; ok {
+		delete(t, key)
+		if len(t) == 0 {
+			delete(m.byTarget, targetKey)
+		}
+	}
+}
+
 // Create creates a new poller.
 func (m *PollerManager) Create(p *store.Poller) error {
 	key := pollerKey(p.Namespace, p.Target, p.Name)
@@ -122,8 +170,9 @@ func (m *PollerManager) Create(p *store.Poller) error {
 		return err
 	}
 
-	// Update cache
+	// Update cache and indexes
 	m.pollers[key] = p
+	m.addToIndexes(p.Namespace, p.Target, key)
 
 	// Initialize state
 	state := m.stateManager.Get(p.Namespace, p.Target, p.Name)
@@ -165,14 +214,21 @@ func (m *PollerManager) Get(namespace, target, name string) (*store.Poller, erro
 }
 
 // List returns all pollers for a target.
+// Uses secondary index for O(m) lookup where m = pollers in target.
 func (m *PollerManager) List(namespace, target string) []*store.Poller {
+	targetKey := namespace + "/" + target
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	var result []*store.Poller
-	prefix := namespace + "/" + target + "/"
-	for k, p := range m.pollers {
-		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+	keys, ok := m.byTarget[targetKey]
+	if !ok {
+		return nil
+	}
+
+	result := make([]*store.Poller, 0, len(keys))
+	for key := range keys {
+		if p, ok := m.pollers[key]; ok {
 			result = append(result, p)
 		}
 	}
@@ -180,14 +236,19 @@ func (m *PollerManager) List(namespace, target string) []*store.Poller {
 }
 
 // ListInNamespace returns all pollers in a namespace.
+// Uses secondary index for O(m) lookup where m = pollers in namespace.
 func (m *PollerManager) ListInNamespace(namespace string) []*store.Poller {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	var result []*store.Poller
-	prefix := namespace + "/"
-	for k, p := range m.pollers {
-		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+	keys, ok := m.byNamespace[namespace]
+	if !ok {
+		return nil
+	}
+
+	result := make([]*store.Poller, 0, len(keys))
+	for key := range keys {
+		if p, ok := m.pollers[key]; ok {
 			result = append(result, p)
 		}
 	}
@@ -265,12 +326,16 @@ func (m *PollerManager) Delete(namespace, target, name string) (linksDeleted int
 		return 0, err
 	}
 
-	// Remove from cache
+	// Remove from cache and indexes
 	delete(m.pollers, key)
+	m.removeFromIndexes(namespace, target, key)
 
 	// Remove state and stats
 	m.stateManager.Remove(namespace, target, name)
 	m.statsManager.Remove(namespace, target, name)
+
+	// Invalidate config cache
+	m.configResolver.Invalidate(namespace, target, name)
 
 	return linksDeleted, nil
 }
@@ -383,18 +448,17 @@ func (m *PollerManager) Count() int {
 }
 
 // CountInTarget returns the number of pollers in a target.
+// Uses secondary index for O(1) lookup.
 func (m *PollerManager) CountInTarget(namespace, target string) int {
+	targetKey := namespace + "/" + target
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	count := 0
-	prefix := namespace + "/" + target + "/"
-	for k := range m.pollers {
-		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
-			count++
-		}
+	if keys, ok := m.byTarget[targetKey]; ok {
+		return len(keys)
 	}
-	return count
+	return 0
 }
 
 // GetEnabledPollers returns all enabled pollers.

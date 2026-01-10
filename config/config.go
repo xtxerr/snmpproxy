@@ -16,6 +16,7 @@ type Config struct {
 	Auth    AuthConfig     `yaml:"auth"`
 	Session SessionConfig  `yaml:"session"`
 	Poller  PollerConfig   `yaml:"poller"`
+	Storage StorageConfig  `yaml:"storage"`
 	SNMP    SNMPDefaults   `yaml:"snmp"`
 	Targets []TargetConfig `yaml:"targets"`
 }
@@ -52,6 +53,50 @@ type SessionConfig struct {
 type PollerConfig struct {
 	Workers   int `yaml:"workers"`
 	QueueSize int `yaml:"queue_size"`
+}
+
+// StorageConfig holds storage and persistence settings.
+//
+// The storage subsystem uses batched writes to optimize database performance.
+// Samples are accumulated in memory and flushed to the database either when
+// the batch size is reached OR the flush timeout expires, whichever comes first.
+//
+// Tuning Guidelines:
+//   - High-throughput (>10k samples/s): Increase batch_size to 5000-10000
+//   - Low-latency requirements: Decrease flush_timeout_sec to 1-2
+//   - Memory-constrained: Decrease batch_size to 500-1000
+//   - High-reliability: Decrease both for more frequent persistence
+type StorageConfig struct {
+	// DBPath is the path to the DuckDB database file.
+	// Default: "data/snmpproxy.db"
+	DBPath string `yaml:"db_path"`
+
+	// SecretKeyPath is the path to the 32-byte encryption key for secrets.
+	// If not set, secret encryption is disabled.
+	// Generate with: openssl rand -out secret.key 32
+	SecretKeyPath string `yaml:"secret_key_path"`
+
+	// SampleBatchSize is the number of samples to accumulate before writing to DB.
+	// Larger values improve write throughput but increase memory usage and
+	// potential data loss on crash.
+	// Range: 100-10000, Default: 1000
+	SampleBatchSize int `yaml:"sample_batch_size"`
+
+	// SampleFlushTimeoutSec is the maximum time to hold samples before flushing.
+	// Samples are flushed when batch_size is reached OR this timeout expires.
+	// Lower values reduce data loss risk but increase DB write frequency.
+	// Range: 1-60, Default: 5
+	SampleFlushTimeoutSec int `yaml:"sample_flush_timeout_sec"`
+
+	// StateFlushIntervalSec is how often to persist poller state to DB.
+	// Poller state includes: oper_state, health_state, last_error, etc.
+	// Range: 1-60, Default: 5
+	StateFlushIntervalSec int `yaml:"state_flush_interval_sec"`
+
+	// StatsFlushIntervalSec is how often to persist poller statistics to DB.
+	// Statistics include: polls_total, polls_success, poll timing, etc.
+	// Range: 1-120, Default: 10
+	StatsFlushIntervalSec int `yaml:"stats_flush_interval_sec"`
 }
 
 // SNMPDefaults holds default SNMP settings for new targets.
@@ -203,6 +248,13 @@ func Default() *Config {
 			Workers:   100,
 			QueueSize: 10000,
 		},
+		Storage: StorageConfig{
+			DBPath:                "data/snmpproxy.db",
+			SampleBatchSize:       1000,
+			SampleFlushTimeoutSec: 5,
+			StateFlushIntervalSec: 5,
+			StatsFlushIntervalSec: 10,
+		},
 		SNMP: SNMPDefaults{
 			TimeoutMs:  5000,
 			Retries:    2,
@@ -248,6 +300,11 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate storage settings
+	if err := c.Storage.Validate(); err != nil {
+		return fmt.Errorf("storage: %w", err)
+	}
+
 	// Validate targets
 	targetIDs := make(map[string]bool)
 	for i, tc := range c.Targets {
@@ -261,6 +318,54 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// Validate checks storage configuration for errors.
+func (sc *StorageConfig) Validate() error {
+	if sc.SampleBatchSize < 100 {
+		return fmt.Errorf("sample_batch_size must be >= 100 (got %d)", sc.SampleBatchSize)
+	}
+	if sc.SampleBatchSize > 10000 {
+		return fmt.Errorf("sample_batch_size must be <= 10000 (got %d)", sc.SampleBatchSize)
+	}
+
+	if sc.SampleFlushTimeoutSec < 1 {
+		return fmt.Errorf("sample_flush_timeout_sec must be >= 1 (got %d)", sc.SampleFlushTimeoutSec)
+	}
+	if sc.SampleFlushTimeoutSec > 60 {
+		return fmt.Errorf("sample_flush_timeout_sec must be <= 60 (got %d)", sc.SampleFlushTimeoutSec)
+	}
+
+	if sc.StateFlushIntervalSec < 1 {
+		return fmt.Errorf("state_flush_interval_sec must be >= 1 (got %d)", sc.StateFlushIntervalSec)
+	}
+	if sc.StateFlushIntervalSec > 60 {
+		return fmt.Errorf("state_flush_interval_sec must be <= 60 (got %d)", sc.StateFlushIntervalSec)
+	}
+
+	if sc.StatsFlushIntervalSec < 1 {
+		return fmt.Errorf("stats_flush_interval_sec must be >= 1 (got %d)", sc.StatsFlushIntervalSec)
+	}
+	if sc.StatsFlushIntervalSec > 120 {
+		return fmt.Errorf("stats_flush_interval_sec must be <= 120 (got %d)", sc.StatsFlushIntervalSec)
+	}
+
+	return nil
+}
+
+// SampleFlushTimeout returns the sample flush timeout as a duration.
+func (sc *StorageConfig) SampleFlushTimeout() time.Duration {
+	return time.Duration(sc.SampleFlushTimeoutSec) * time.Second
+}
+
+// StateFlushInterval returns the state flush interval as a duration.
+func (sc *StorageConfig) StateFlushInterval() time.Duration {
+	return time.Duration(sc.StateFlushIntervalSec) * time.Second
+}
+
+// StatsFlushInterval returns the stats flush interval as a duration.
+func (sc *StorageConfig) StatsFlushInterval() time.Duration {
+	return time.Duration(sc.StatsFlushIntervalSec) * time.Second
 }
 
 // TLSEnabled returns true if TLS cert and key are configured.

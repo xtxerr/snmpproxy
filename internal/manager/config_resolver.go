@@ -2,6 +2,9 @@
 package manager
 
 import (
+	"sync"
+	"time"
+
 	"github.com/xtxerr/snmpproxy/internal/store"
 )
 
@@ -37,19 +40,42 @@ type ResolvedPollerConfig struct {
 	BufferSizeSource string
 }
 
+// configCacheEntry holds a cached config with timestamp.
+type configCacheEntry struct {
+	config    *ResolvedPollerConfig
+	createdAt time.Time
+}
+
 // ConfigResolver resolves inherited configuration for pollers.
 type ConfigResolver struct {
-	store *store.Store
+	store    *store.Store
+	cache    sync.Map // key -> *configCacheEntry
+	cacheTTL time.Duration
 }
 
 // NewConfigResolver creates a new config resolver.
 func NewConfigResolver(s *store.Store) *ConfigResolver {
-	return &ConfigResolver{store: s}
+	return &ConfigResolver{
+		store:    s,
+		cacheTTL: 30 * time.Second, // Cache for 30 seconds
+	}
 }
 
 // Resolve builds the effective configuration for a poller by merging
 // server defaults → namespace defaults → target defaults → poller explicit.
+// Results are cached to avoid repeated DB lookups.
 func (r *ConfigResolver) Resolve(namespace, target, poller string) (*ResolvedPollerConfig, error) {
+	key := namespace + "/" + target + "/" + poller
+
+	// Check cache first
+	if cached, ok := r.cache.Load(key); ok {
+		entry := cached.(*configCacheEntry)
+		if time.Since(entry.createdAt) < r.cacheTTL {
+			return entry.config, nil
+		}
+		// Cache expired, will refresh
+	}
+
 	result := &ResolvedPollerConfig{}
 
 	// 1. Server defaults
@@ -85,6 +111,12 @@ func (r *ConfigResolver) Resolve(namespace, target, poller string) (*ResolvedPol
 	if p != nil && p.PollingConfig != nil {
 		r.applyPollingConfig(result, p.PollingConfig, "explicit")
 	}
+
+	// Store in cache
+	r.cache.Store(key, &configCacheEntry{
+		config:    result,
+		createdAt: time.Now(),
+	})
 
 	return result, nil
 }
@@ -258,4 +290,37 @@ func extractSecretName(ref string) string {
 		return ref[7:]
 	}
 	return ""
+}
+
+// Invalidate removes a cached config for a specific poller.
+func (r *ConfigResolver) Invalidate(namespace, target, poller string) {
+	key := namespace + "/" + target + "/" + poller
+	r.cache.Delete(key)
+}
+
+// InvalidateTarget removes all cached configs for a target.
+func (r *ConfigResolver) InvalidateTarget(namespace, target string) {
+	prefix := namespace + "/" + target + "/"
+	r.cache.Range(func(key, value interface{}) bool {
+		if k, ok := key.(string); ok && len(k) > len(prefix) && k[:len(prefix)] == prefix {
+			r.cache.Delete(key)
+		}
+		return true
+	})
+}
+
+// InvalidateNamespace removes all cached configs for a namespace.
+func (r *ConfigResolver) InvalidateNamespace(namespace string) {
+	prefix := namespace + "/"
+	r.cache.Range(func(key, value interface{}) bool {
+		if k, ok := key.(string); ok && len(k) > len(prefix) && k[:len(prefix)] == prefix {
+			r.cache.Delete(key)
+		}
+		return true
+	})
+}
+
+// InvalidateAll clears the entire cache.
+func (r *ConfigResolver) InvalidateAll() {
+	r.cache = sync.Map{}
 }

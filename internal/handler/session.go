@@ -221,6 +221,10 @@ type SessionManager struct {
 	tokens   map[string]*TokenConfig   // tokenID -> config
 	byToken  map[string][]*Session     // tokenID -> sessions
 
+	// Reverse index: namespace/key -> set of session IDs
+	// Enables O(1) subscriber lookup instead of O(n)
+	subscriptionIndex map[string]map[string]struct{}
+
 	reconnectWindow time.Duration
 	authTimeout     time.Duration
 
@@ -238,11 +242,12 @@ type SessionManagerConfig struct {
 // NewSessionManager creates a new session manager.
 func NewSessionManager(cfg *SessionManagerConfig) *SessionManager {
 	sm := &SessionManager{
-		sessions:        make(map[string]*Session),
-		tokens:          make(map[string]*TokenConfig),
-		byToken:         make(map[string][]*Session),
-		reconnectWindow: cfg.ReconnectWindow,
-		authTimeout:     cfg.AuthTimeout,
+		sessions:          make(map[string]*Session),
+		tokens:            make(map[string]*TokenConfig),
+		byToken:           make(map[string][]*Session),
+		subscriptionIndex: make(map[string]map[string]struct{}),
+		reconnectWindow:   cfg.ReconnectWindow,
+		authTimeout:       cfg.AuthTimeout,
 	}
 
 	for i := range cfg.Tokens {
@@ -395,17 +400,70 @@ func (sm *SessionManager) GetSessionsInNamespace(namespace string) []*Session {
 
 // GetSubscribersFor returns sessions subscribed to a key in a namespace.
 // Key format: "target/poller"
+// Uses reverse index for O(m) lookup where m = subscribers, instead of O(n) sessions.
 func (sm *SessionManager) GetSubscribersFor(namespace, key string) []*Session {
+	fullKey := namespace + "/" + key
+
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	var subscribers []*Session
-	for _, s := range sm.sessions {
-		if !s.IsLost() && s.GetNamespace() == namespace && s.IsSubscribed(key) {
+	sessionIDs, ok := sm.subscriptionIndex[fullKey]
+	if !ok {
+		return nil
+	}
+
+	subscribers := make([]*Session, 0, len(sessionIDs))
+	for sessionID := range sessionIDs {
+		if s, ok := sm.sessions[sessionID]; ok && !s.IsLost() {
 			subscribers = append(subscribers, s)
 		}
 	}
 	return subscribers
+}
+
+// SubscribeSession adds a subscription to the reverse index.
+// Called by Session.Subscribe to maintain the index.
+func (sm *SessionManager) SubscribeSession(sessionID, namespace, key string) {
+	fullKey := namespace + "/" + key
+
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if sm.subscriptionIndex[fullKey] == nil {
+		sm.subscriptionIndex[fullKey] = make(map[string]struct{})
+	}
+	sm.subscriptionIndex[fullKey][sessionID] = struct{}{}
+}
+
+// UnsubscribeSession removes a subscription from the reverse index.
+func (sm *SessionManager) UnsubscribeSession(sessionID, namespace, key string) {
+	fullKey := namespace + "/" + key
+
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if subs, ok := sm.subscriptionIndex[fullKey]; ok {
+		delete(subs, sessionID)
+		if len(subs) == 0 {
+			delete(sm.subscriptionIndex, fullKey)
+		}
+	}
+}
+
+// UnsubscribeAllForSession removes all subscriptions for a session from the index.
+func (sm *SessionManager) UnsubscribeAllForSession(sessionID, namespace string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	prefix := namespace + "/"
+	for fullKey, subs := range sm.subscriptionIndex {
+		if len(fullKey) > len(prefix) && fullKey[:len(prefix)] == prefix {
+			delete(subs, sessionID)
+			if len(subs) == 0 {
+				delete(sm.subscriptionIndex, fullKey)
+			}
+		}
+	}
 }
 
 // Count returns the number of sessions.

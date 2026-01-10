@@ -50,6 +50,8 @@ func (d *MessageDispatcher) Dispatch(session *handler.Session, requestID uint64,
 		return d.handleUpdateTarget(ctx, payload)
 	case "delete_target":
 		return d.handleDeleteTarget(ctx, payload)
+	case "set_labels":
+		return d.handleSetLabels(ctx, payload)
 
 	// Poller operations
 	case "list_pollers":
@@ -68,6 +70,8 @@ func (d *MessageDispatcher) Dispatch(session *handler.Session, requestID uint64,
 		return d.handleDisablePoller(ctx, payload)
 	case "get_history":
 		return d.handleGetHistory(ctx, payload)
+	case "get_resolved_config":
+		return d.handleGetResolvedConfig(ctx, payload)
 
 	// Browse operations
 	case "browse":
@@ -86,6 +90,8 @@ func (d *MessageDispatcher) Dispatch(session *handler.Session, requestID uint64,
 		return d.handleUnsubscribe(ctx, payload)
 	case "list_subscriptions":
 		return d.handleListSubscriptions(ctx, payload)
+	case "subscribe_by_path":
+		return d.handleSubscribeByPath(ctx, payload)
 
 	// Status operations
 	case "get_server_status":
@@ -206,6 +212,14 @@ func (d *MessageDispatcher) handleDeleteTarget(ctx *handler.RequestContext, payl
 		return nil, fmt.Errorf("invalid payload type")
 	}
 	return d.srv.targetHandler.DeleteTarget(ctx, req)
+}
+
+func (d *MessageDispatcher) handleSetLabels(ctx *handler.RequestContext, payload interface{}) (interface{}, error) {
+	req, ok := payload.(*handler.SetLabelsRequest)
+	if !ok {
+		return nil, fmt.Errorf("invalid payload type")
+	}
+	return d.srv.targetHandler.SetLabels(ctx, req)
 }
 
 // ============================================================================
@@ -330,6 +344,14 @@ func (d *MessageDispatcher) handleGetHistory(ctx *handler.RequestContext, payloa
 	return d.srv.pollerHandler.GetHistory(ctx, req)
 }
 
+func (d *MessageDispatcher) handleGetResolvedConfig(ctx *handler.RequestContext, payload interface{}) (interface{}, error) {
+	req, ok := payload.(*handler.GetResolvedConfigRequest)
+	if !ok {
+		return nil, fmt.Errorf("invalid payload type")
+	}
+	return d.srv.pollerHandler.GetResolvedConfig(ctx, req)
+}
+
 // ============================================================================
 // Browse handlers
 // ============================================================================
@@ -392,6 +414,14 @@ func (d *MessageDispatcher) handleListSubscriptions(ctx *handler.RequestContext,
 		req = &handler.ListSubscriptionsRequest{}
 	}
 	return d.srv.subHandler.ListSubscriptions(ctx, req)
+}
+
+func (d *MessageDispatcher) handleSubscribeByPath(ctx *handler.RequestContext, payload interface{}) (interface{}, error) {
+	req, ok := payload.(*handler.SubscribeByPathRequest)
+	if !ok {
+		return nil, fmt.Errorf("invalid payload type")
+	}
+	return d.srv.subHandler.SubscribeByPath(ctx, req)
 }
 
 // ============================================================================

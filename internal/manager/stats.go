@@ -1,7 +1,6 @@
 package manager
 
 import (
-	"fmt"
 	"sync"
 	"sync/atomic"
 )
@@ -42,7 +41,7 @@ func NewPollerStats(namespace, target, poller string) *PollerStats {
 
 // Key returns the unique key for this poller.
 func (s *PollerStats) Key() string {
-	return fmt.Sprintf("%s/%s/%s", s.Namespace, s.Target, s.Poller)
+	return s.Namespace + "/" + s.Target + "/" + s.Poller
 }
 
 // RecordPoll records a poll result.
@@ -139,7 +138,7 @@ func NewStatsManager() *StatsManager {
 
 // Get returns stats for a poller.
 func (m *StatsManager) Get(namespace, target, poller string) *PollerStats {
-	key := fmt.Sprintf("%s/%s/%s", namespace, target, poller)
+	key := namespace + "/" + target + "/" + poller
 
 	m.mu.RLock()
 	stats, ok := m.stats[key]
@@ -165,7 +164,7 @@ func (m *StatsManager) Get(namespace, target, poller string) *PollerStats {
 
 // Remove removes stats for a poller.
 func (m *StatsManager) Remove(namespace, target, poller string) {
-	key := fmt.Sprintf("%s/%s/%s", namespace, target, poller)
+	key := namespace + "/" + target + "/" + poller
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
